@@ -1,0 +1,163 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+logs/
+*.log
+log.json
+progress.md
+
+# Data files
+data/csv/
+*.csv
+*.json
+*.xlsx
+*.xls
+*.parquet
+*.avro
+*.orc
+
+# Configuration files with sensitive data
+config_files/
+*.txt
+*.json
+!package.json
+!package-lock.json
+!tsconfig.json
+!angular.json
+!webpack.config.js
+!babel.config.js
+!jest.config.js
+!eslint.config.js
+!prettier.config.js
+
+# Docker
+.dockerignore
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Azure
+.azure/
+
+# Snowflake
+snowflake_private_key.txt
+*.p8
+*.pem
+
+# PowerBI
+powerbi_connection_config*.json
+
+# Azure Storage
+azure_storage_credentials.json
+azure_access_token*.json
+azure_access_token*.txt
+
+# Logic Apps
+logic-app-*.json
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+
+# Node.js (if applicable)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Coverage reports
+coverage/
+*.lcov
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# pipenv
+Pipfile.lock
+
+# PEP 582
+__pypackages__/
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath parsed files
+*.sage.py
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# pytype static type analyzer
+.pytype/
+
+# Cython debug symbols
+cython_debug/ 

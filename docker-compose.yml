@@ -1,0 +1,84 @@
+version: '3.8'
+
+services:
+  # Azure Function for ETL pipeline
+  azure-function:
+    build: .
+    ports:
+      - "7071:80"
+    environment:
+      - AzureWebJobsScriptRoot=/home/site/wwwroot
+      - AzureFunctionsJobHost__Logging__Console__IsEnabled=true
+    volumes:
+      - ./main:/home/site/wwwroot/main
+      - ./local.settings.json:/home/site/wwwroot/local.settings.json
+    depends_on:
+      - azure-storage-emulator
+
+  # Azure Storage Emulator for local development
+  azure-storage-emulator:
+    image: mcr.microsoft.com/azure-storage/azurite
+    ports:
+      - "10000:10000"  # Blob service
+      - "10001:10001"  # Queue service
+      - "10002:10002"  # Table service
+    volumes:
+      - azure-storage-data:/data
+    command: azurite --blobHost 0.0.0.0 --queueHost 0.0.0.0 --tableHost 0.0.0.0
+
+  # Local development database (optional - for testing)
+  postgres-dev:
+    image: postgres:13
+    environment:
+      POSTGRES_DB: lws_dev
+      POSTGRES_USER: dev_user
+      POSTGRES_PASSWORD: dev_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    profiles:
+      - dev
+
+  # Redis cache for session management
+  redis-cache:
+    image: redis:6-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    profiles:
+      - dev
+
+  # Monitoring and logging
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    profiles:
+      - monitoring
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana-data:/var/lib/grafana
+    profiles:
+      - monitoring
+
+volumes:
+  azure-storage-data:
+  postgres-data:
+  redis-data:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  default:
+    name: azure-pipeline-network 

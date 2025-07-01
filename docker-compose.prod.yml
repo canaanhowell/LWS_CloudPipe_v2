@@ -1,0 +1,97 @@
+version: '3.8'
+
+services:
+  # Production Azure Function
+  azure-function:
+    restart: unless-stopped
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - AzureWebJobsScriptRoot=/home/site/wwwroot
+      - AzureFunctionsJobHost__Logging__Console__IsEnabled=false
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '0.5'
+        reservations:
+          memory: 512M
+          cpus: '0.25'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Production monitoring
+  prometheus:
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.25'
+
+  grafana:
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_SERVER_ROOT_URL=http://localhost:3000
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.25'
+
+  # Production database (if using local)
+  postgres-prod:
+    image: postgres:13
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-lws_prod}
+      POSTGRES_USER: ${POSTGRES_USER:-lws_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres-prod-data:/var/lib/postgresql/data
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '0.5'
+    profiles:
+      - prod-local
+
+  # Redis for production caching
+  redis-prod:
+    image: redis:6-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-}
+    volumes:
+      - redis-prod-data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.25'
+    profiles:
+      - prod-local
+
+volumes:
+  prometheus-data:
+  grafana-data:
+  postgres-prod-data:
+  redis-prod-data:
+
+networks:
+  default:
+    name: azure-pipeline-prod-network 

@@ -1,0 +1,66 @@
+version: '3.8'
+
+services:
+  # Override Azure Function for development
+  azure-function:
+    environment:
+      - AzureWebJobsScriptRoot=/home/site/wwwroot
+      - AzureFunctionsJobHost__Logging__Console__IsEnabled=true
+      - ASPNETCORE_ENVIRONMENT=Development
+    volumes:
+      - ./main:/home/site/wwwroot/main
+      - ./local.settings.json:/home/site/wwwroot/local.settings.json
+      - ./requirements.txt:/home/site/wwwroot/requirements.txt
+      - ./host.json:/home/site/wwwroot/host.json
+    command: func start --host 0.0.0.0 --port 80
+
+  # Development database
+  postgres-dev:
+    image: postgres:13
+    environment:
+      POSTGRES_DB: lws_dev
+      POSTGRES_USER: dev_user
+      POSTGRES_PASSWORD: dev_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./sql_scripts:/docker-entrypoint-initdb.d
+
+  # Redis for caching
+  redis-cache:
+    image: redis:6-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+
+  # Jupyter notebook for data analysis
+  jupyter:
+    image: jupyter/datascience-notebook:latest
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./python_scripts:/home/jovyan/work
+      - ./csv_files:/home/jovyan/data
+      - ./excel_files:/home/jovyan/excel
+    environment:
+      - JUPYTER_ENABLE_LAB=yes
+    command: start.sh jupyter lab --LabApp.token='' --LabApp.password=''
+
+  # VS Code Server for remote development
+  code-server:
+    image: codercom/code-server:latest
+    ports:
+      - "8443:8443"
+    volumes:
+      - ./:/home/coder/project
+      - code-server-data:/home/coder/.local
+    environment:
+      - PASSWORD=devpassword
+      - DOCKER_USER=coder
+
+volumes:
+  postgres-data:
+  redis-data:
+  code-server-data: 

@@ -1,0 +1,147 @@
+version: '3.8'
+
+services:
+  # Azure Function optimized for production deployment
+  azure-function:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    image: azure-function:latest
+    container_name: azure-function-app
+    ports:
+      - "80:80"
+    environment:
+      # Azure Functions runtime settings
+      - AzureWebJobsScriptRoot=/home/site/wwwroot
+      - AzureFunctionsJobHost__Logging__Console__IsEnabled=true
+      - ASPNETCORE_ENVIRONMENT=Production
+      
+      # Python settings
+      - PYTHONPATH=/home/site/wwwroot
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+      
+      # Application settings (will be overridden by Azure App Settings)
+      - AZURE_TENANT_ID=${AZURE_TENANT_ID}
+      - AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
+      - AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
+      - AZURE_STORAGE_CONNECTION_STRING=${AZURE_STORAGE_CONNECTION_STRING}
+      - SNOWFLAKE_ACCOUNT=${SNOWFLAKE_ACCOUNT}
+      - SNOWFLAKE_USER=${SNOWFLAKE_USER}
+      - SNOWFLAKE_PASSWORD=${SNOWFLAKE_PASSWORD}
+      - SNOWFLAKE_WAREHOUSE=${SNOWFLAKE_WAREHOUSE}
+      - SNOWFLAKE_DATABASE=${SNOWFLAKE_DATABASE}
+      - SNOWFLAKE_SCHEMA=${SNOWFLAKE_SCHEMA}
+      - SHAREPOINT_SITE_ID=${SHAREPOINT_SITE_ID}
+      - SHAREPOINT_CLIENT_ID=${SHAREPOINT_CLIENT_ID}
+      - SHAREPOINT_CLIENT_SECRET=${SHAREPOINT_CLIENT_SECRET}
+      - SHAREPOINT_SCOOP_DRIVE_ID=${SHAREPOINT_SCOOP_DRIVE_ID}
+      - SHAREPOINT_SCOOP_FOLDER_ID=${SHAREPOINT_SCOOP_FOLDER_ID}
+      - BLOB_CONTAINER=${BLOB_CONTAINER:-pbi25}
+      - EXCEL_FILENAME=${EXCEL_FILENAME:-Excel DATA from SCOOP.xlsx}
+      
+      # Monitoring and logging
+      - APPLICATIONINSIGHTS_CONNECTION_STRING=${APPLICATIONINSIGHTS_CONNECTION_STRING}
+      - WEBSITE_SITE_NAME=${WEBSITE_SITE_NAME:-azure-function-app}
+      
+    volumes:
+      # Mount configuration files
+      - ./local.settings.json:/home/site/wwwroot/local.settings.json:ro
+      
+      # Mount data directories for persistence
+      - azure-function-data:/home/site/wwwroot/csv_files
+      - azure-function-data:/home/site/wwwroot/excel_files
+      - azure-function-data:/home/site/wwwroot/config_files
+      - azure-function-logs:/home/site/wwwroot/logs
+      
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '0.5'
+        reservations:
+          memory: 512M
+          cpus: '0.25'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - azure-function-network
+
+  # Azure Storage Emulator for local development
+  azure-storage-emulator:
+    image: mcr.microsoft.com/azure-storage/azurite:latest
+    container_name: azure-storage-emulator
+    ports:
+      - "10000:10000"  # Blob service
+      - "10001:10001"  # Queue service
+      - "10002:10002"  # Table service
+    volumes:
+      - azure-storage-data:/data
+    command: azurite --blobHost 0.0.0.0 --queueHost 0.0.0.0 --tableHost 0.0.0.0
+    restart: unless-stopped
+    networks:
+      - azure-function-network
+    profiles:
+      - local-dev
+
+  # Redis cache for session management and caching
+  redis-cache:
+    image: redis:7-alpine
+    container_name: azure-function-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-}
+    restart: unless-stopped
+    networks:
+      - azure-function-network
+    profiles:
+      - local-dev
+
+  # PostgreSQL for local development (optional)
+  postgres-dev:
+    image: postgres:15-alpine
+    container_name: azure-function-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-lws_dev}
+      POSTGRES_USER: ${POSTGRES_USER:-azurefunc}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-azurefunc123}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./sql_scripts:/docker-entrypoint-initdb.d:ro
+    restart: unless-stopped
+    networks:
+      - azure-function-network
+    profiles:
+      - local-dev
+
+volumes:
+  azure-function-data:
+    driver: local
+  azure-function-logs:
+    driver: local
+  azure-storage-data:
+    driver: local
+  redis-data:
+    driver: local
+  postgres-data:
+    driver: local
+
+networks:
+  azure-function-network:
+    driver: bridge
+    name: azure-function-network 
