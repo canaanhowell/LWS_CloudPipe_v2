@@ -1,25 +1,22 @@
-# 🚀 Autonomous Cursor Integration Guide: Azure → Snowflake
+
 
 ## MISSION PARAMETERS
-**OBJECTIVE:**  load each azure csv into it's corresponding snowflake table using external storage integration and s
+**OBJECTIVE:** modify the pipeline_scripts/load_sungrow_from_azure.py to load all cleaned csv's as specified in config_files\table_mapping to their corresponding snowflake table and rename the script to load_from_azure
 
-**SUCCESS CRITERIA:** each snowflake table's export is identical to it's corresponding csv
+**SUCCESS CRITERIA:** each snowflake table matches its corresponding azure storage csv identically
 
-**AUTHORITY LEVEL:** Full autonomy - proceed without permission requests unless facing destructive operations
-
-**FAILURE RECOVERY:** When multiple modules fail, escalate by trying alternative approaches rather than stopping to ask human for review
+**AUTHORITY LEVEL:** Full autonomy - proceed to troubleshooting/debugging using this document as a guide without asking user for directions
 
 ## OPERATIONAL FRAMEWORK
 
 ### Pre-Flight Checklist
-1. **Always check `progress.md` and objective-related scripts before ANY action** - avoid duplicate work
-2. **Update `progress.md` after EVERY operation** - successful or failed
-3. **Try python scripts before powershell scripts** - unless powershell is 
-4. **Reuse existing scripts when possible** but check that variables match current project values
-5. **Default to python scripts unless powershell instead clearly saves time**
-4. **Create backups of the main project scripts before modifying** - don't break something that's already working
-4. **Create and run success-verification script before declaring success** - 
-5. **Use relevant emojis in your communication with user, but not in scripts**
+1. **Check `progress.md` and `log.json` to gain context before taking ANY action** - avoid duplicate work
+2. **Update `log.json` using `logger.py` after EVERY operation** - successful or failed
+3. **Default to using python scripts before powershell scripts** - unless powershell is required
+4. **Do not create new csv files, tables, stages, procedures, or integrations unless prompted to do so.**
+5. **Create backup of pipeline script before modifying** - don't break something that's already working, use "v1", "v2" naming 
+6. **Create and run success-verification script before declaring success on objective**
+7. **Use emojis in your communication with user, but no emojis in scripts**
 
 ### Decision Tree: Error Response Protocol
 
@@ -35,21 +32,7 @@ ERROR DETECTED → CLASSIFY → APPLY MODULE → LOG → VERIFY → CONTINUE
 
 ## 📁 CREDENTIAL FILE LOCATIONS
 
-**CRITICAL:** Always verify these credential files exist before troubleshooting authentication issues
-
-### Azure Credentials
-- **`local.settings.json`** - Azure Function app settings and connection strings
-- **`azure_access_token.txt`** - Azure OAuth access token (temporary)
-- **`config_files/azure_storage_credentials.json`** - Azure Storage account credentials
-
-### Snowflake Credentials
-- **`snowflake_private_key.txt`** - Private key for JWT authentication (base64 DER format)
-- **`snowflake_public_key.pem`** - Public key for JWT authentication (PEM format)
-- **`config_files/`** - Additional Snowflake configuration files
-
-### Configuration Files
-- **`config_files/table_primary_key_mapping.json`** - Table to primary key mappings
-- **`config_files/azure_access_token_decoded.json`** - Decoded Azure token information
+**CRITICAL:** Always check "connections.md" before troubleshooting authentication issues
 
 **Mandatory Actions:**
 - Verify all credential files exist before authentication troubleshooting
@@ -58,6 +41,8 @@ ERROR DETECTED → CLASSIFY → APPLY MODULE → LOG → VERIFY → CONTINUE
 - Test credential loading in isolation
 
 ---
+
+### Troubleshooting Guide:
 
 ## 🐍 MODULE A: Python Runtime Errors
 
