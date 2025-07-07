@@ -144,9 +144,13 @@ def analyze_and_reconcile_table(cursor, database, schema, table_name, csv_column
     log("SCHEMA_SYNC", f"Comparing {len(csv_columns)} CSV columns vs {len(snowflake_columns)} Snowflake columns", "INFO")
     
     # 2. Add missing columns (present in CSV, not in Snowflake)
+    # Only add columns if their normalized name is not present in Snowflake at all.
+    # Do NOT add columns just because the type is different.
     added_columns = []
     for safe_csv_col, orig_csv_col in csv_safe_to_orig.items():
-        log("SCHEMA_SYNC", f"Checking CSV column: '{orig_csv_col}' (safe: {safe_csv_col})", "DEBUG")
+        # Sanitize column name for logging to avoid Unicode encoding issues
+        safe_log_name = ''.join(c if ord(c) < 128 else '_' for c in orig_csv_col)
+        log("SCHEMA_SYNC", f"Checking CSV column: '{safe_log_name}' (safe: {safe_csv_col})", "DEBUG")
         if safe_csv_col not in snowflake_safe_to_orig:
             log("SCHEMA_SYNC", f"Adding missing column: '{orig_csv_col}' to {database}.{schema}.{table_name}", "INFO")
             try:
@@ -169,9 +173,13 @@ def analyze_and_reconcile_table(cursor, database, schema, table_name, csv_column
                 log("SCHEMA_SYNC", f"Failed to add column '{orig_csv_col}': {str(e)}", "ERROR")
     
     # 3. Drop extra columns (present in Snowflake, not in CSV)
+    # Only drop columns if their normalized name is not present in the CSV at all.
+    # Do NOT drop columns just because the type is different.
     dropped_columns = []
     for safe_snowflake_col, orig_snowflake_col in snowflake_safe_to_orig.items():
-        log("SCHEMA_SYNC", f"Checking Snowflake column: '{orig_snowflake_col}' (safe: {safe_snowflake_col})", "DEBUG")
+        # Sanitize column name for logging to avoid Unicode encoding issues
+        safe_log_name = ''.join(c if ord(c) < 128 else '_' for c in orig_snowflake_col)
+        log("SCHEMA_SYNC", f"Checking Snowflake column: '{safe_log_name}' (safe: {safe_snowflake_col})", "DEBUG")
         if safe_snowflake_col not in csv_safe_to_orig:
             log("SCHEMA_SYNC", f"Dropping extra column: '{orig_snowflake_col}' from {database}.{schema}.{table_name}", "INFO")
             try:

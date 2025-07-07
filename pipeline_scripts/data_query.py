@@ -52,7 +52,7 @@ class DataPipeline:
             "endpoints": {},
             "success_count": 0,
             "failure_count": 0,
-            "total_endpoints": 5
+            "total_endpoints": 4  # Fixed: There are only 4 endpoints defined
         }
         
         log("PIPELINE", "Data pipeline initialized", "INFO")
@@ -515,8 +515,19 @@ def main():
         log_file = log_dir / "pipeline.log"
         if log_file.exists():
             print("\n=== PIPELINE LOG FILE ===")
-            with open(log_file, "r") as f:
-                print(f.read())
+            try:
+                with open(log_file, "r", encoding="utf-8") as f:
+                    content = f.read()
+                    # Filter out problematic Unicode characters for Windows console
+                    safe_content = ''.join(c if ord(c) < 128 else '_' for c in content)
+                    print(safe_content)
+            except UnicodeDecodeError:
+                # Fallback to reading with error handling for problematic characters
+                with open(log_file, "r", encoding="utf-8", errors="replace") as f:
+                    content = f.read()
+                    # Filter out problematic Unicode characters for Windows console
+                    safe_content = ''.join(c if ord(c) < 128 else '_' for c in content)
+                    print(safe_content)
         else:
             print("\n(No pipeline.log file found in logs directory)")
         # Upload log file to Azure Blob Storage
@@ -536,9 +547,7 @@ def main():
                 print("Log file, connection string, or container name missing. Skipping log upload.")
         except Exception as e:
             print(f"Failed to upload log file to Azure Blob Storage: {e}")
-        # Sleep to keep container alive for log inspection
-        print("\nSleeping for 60 seconds to allow log inspection...")
-        time.sleep(60)
+        # Return success if at least one endpoint succeeded
         return 0 if results['success_count'] > 0 else 1
     except Exception as e:
         log("PIPELINE", f"Critical pipeline error: {str(e)}", "CRITICAL")
