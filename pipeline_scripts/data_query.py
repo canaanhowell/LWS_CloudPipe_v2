@@ -21,12 +21,6 @@ from logger import pipeline_logger, log
 
 # Add required imports for each data source
 try:
-    import snowflake.connector
-    from snowflake.connector.pandas_tools import write_pandas
-except ImportError:
-    log("PIPELINE", "Snowflake connector not installed. Run: pip install snowflake-connector-python", "WARNING")
-
-try:
     from azure.storage.blob import BlobServiceClient
     from azure.identity import ClientSecretCredential
 except ImportError:
@@ -387,70 +381,6 @@ class DataPipeline:
             log("GOOGLE_ANALYTICS", f"Error downloading Google Analytics data: {str(e)}", "ERROR")
             return False
     
-    def download_snowflake_data(self) -> bool:
-        """Download Snowflake data and convert to CSV."""
-        try:
-            log("SNOWFLAKE", "Starting Snowflake data download", "INFO")
-            
-            # Get Snowflake credentials
-            account = self.credentials.get("SNOWFLAKE_ACCOUNT")
-            user = self.credentials.get("SNOWFLAKE_USER")
-            warehouse = self.credentials.get("SNOWFLAKE_WAREHOUSE")
-            database = self.credentials.get("SNOWFLAKE_DATABASE")
-            private_key_path = self.config_dir / "snowflake_private_key.txt"
-            
-            if not all([account, user, warehouse, database]) or not private_key_path.exists():
-                log("SNOWFLAKE", "Missing Snowflake configuration", "ERROR")
-                return False
-            
-            # Read private key
-            with open(private_key_path, 'r') as f:
-                private_key = f.read().strip()
-            
-            # Connect to Snowflake
-            conn = snowflake.connector.connect(
-                account=account,
-                user=user,
-                private_key=private_key,
-                warehouse=warehouse,
-                database=database
-            )
-            
-            # Get list of tables
-            cursor = conn.cursor()
-            cursor.execute("SHOW TABLES")
-            tables = cursor.fetchall()
-            
-            log("SNOWFLAKE", f"Found {len(tables)} tables in database", "INFO")
-            
-            # Download data from each table
-            for table_info in tables:
-                table_name = table_info[1]  # Table name is in second column
-                schema_name = table_info[2]  # Schema name is in third column
-                
-                try:
-                    # Query table data - use just the table name since we're already in the LWS database
-                    query = f"SELECT * FROM {table_name} LIMIT 10000"
-                    df = pd.read_sql(query, conn)
-                    
-                    if not df.empty:
-                        # Upload to Azure only (no local file saving)
-                        csv_filename = f"snowflake_{schema_name}_{table_name}.csv"
-                        self.upload_df_to_azure(df, csv_filename)
-                        log("SNOWFLAKE", f"Saved {len(df)} rows from {schema_name}.{table_name}", "INFO")
-                    
-                except Exception as e:
-                    log("SNOWFLAKE", f"Error querying table {schema_name}.{table_name}: {str(e)}", "WARNING")
-                    continue
-            
-            conn.close()
-            log("SNOWFLAKE", "Snowflake data download completed", "INFO")
-            return True
-            
-        except Exception as e:
-            log("SNOWFLAKE", f"Error downloading Snowflake data: {str(e)}", "ERROR")
-            return False
-    
     def download_azure_blob_data(self) -> bool:
         """Download Azure Blob Storage data and convert to CSV."""
         try:
@@ -498,7 +428,6 @@ class DataPipeline:
             ("SharePoint", self.download_sharepoint_data),
             ("Monday.com", self.download_monday_data),
             ("Google Analytics", self.download_google_analytics_data),
-            ("Snowflake", self.download_snowflake_data),
             ("Azure Blob Storage", self.download_azure_blob_data)
         ]
         

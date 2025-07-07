@@ -100,7 +100,7 @@ class PipelineOrchestrator:
         
         try:
             # Path to csv_cleaner.py
-            csv_cleaner_script = self.base_dir / "csv_cleaner.py"
+            csv_cleaner_script = self.base_dir / "pipeline_scripts" / "csv_cleaner.py"
             
             if not csv_cleaner_script.exists():
                 log("ORCHESTRATOR", f"❌ CSV cleaner script not found: {csv_cleaner_script}", "ERROR")
@@ -200,62 +200,6 @@ class PipelineOrchestrator:
         except Exception as e:
             log("ORCHESTRATOR", f"❌ Stage 3: Exception during schema synchronization: {str(e)}", "ERROR")
             self.results["stages"]["schema_sync"] = {
-                "status": "error",
-                "error": str(e),
-                "timestamp": datetime.now().isoformat()
-            }
-            return False
-    
-    def run_external_storage_setup(self) -> bool:
-        """Run the external storage integration setup."""
-        log("ORCHESTRATOR", "Starting Stage 4: External Storage Integration Setup", "INFO")
-        
-        try:
-            # Path to create_external_storage_integration.py
-            external_storage_script = self.base_dir / "pipeline_scripts" / "create_external_storage_integration.py"
-            
-            if not external_storage_script.exists():
-                log("ORCHESTRATOR", f"❌ External storage setup script not found: {external_storage_script}", "ERROR")
-                return False
-            
-            log("ORCHESTRATOR", f"Executing: {external_storage_script}", "INFO")
-            
-            # Run the external storage setup script
-            result = subprocess.run(
-                [sys.executable, str(external_storage_script)],
-                capture_output=True,
-                text=True,
-                cwd=self.base_dir
-            )
-            
-            # Log the output
-            if result.stdout:
-                log("ORCHESTRATOR", f"External storage setup stdout: {result.stdout}", "INFO")
-            if result.stderr:
-                log("ORCHESTRATOR", f"External storage setup stderr: {result.stderr}", "WARNING")
-            
-            # Check if successful
-            if result.returncode == 0:
-                log("ORCHESTRATOR", "Stage 4: External Storage Integration Setup completed successfully", "INFO")
-                self.results["stages"]["external_storage_setup"] = {
-                    "status": "success",
-                    "return_code": result.returncode,
-                    "timestamp": datetime.now().isoformat()
-                }
-                return True
-            else:
-                log("ORCHESTRATOR", f"❌ Stage 4: External Storage Integration Setup failed with return code {result.returncode}", "ERROR")
-                self.results["stages"]["external_storage_setup"] = {
-                    "status": "failed",
-                    "return_code": result.returncode,
-                    "error": result.stderr,
-                    "timestamp": datetime.now().isoformat()
-                }
-                return False
-                
-        except Exception as e:
-            log("ORCHESTRATOR", f"❌ Stage 4: Exception during external storage setup: {str(e)}", "ERROR")
-            self.results["stages"]["external_storage_setup"] = {
                 "status": "error",
                 "error": str(e),
                 "timestamp": datetime.now().isoformat()
@@ -386,16 +330,6 @@ class PipelineOrchestrator:
         # Stage 3: Schema Synchronization
         stage3_success = self.run_schema_sync()
         if stage3_success:
-            self.results["successful_stages"] += 1
-        else:
-            self.results["failed_stages"] += 1
-        
-        # Brief pause between stages
-        time.sleep(2)
-        
-        # Stage 4: External Storage Integration Setup
-        stage4_success = self.run_external_storage_setup()
-        if stage4_success:
             self.results["successful_stages"] += 1
         else:
             self.results["failed_stages"] += 1

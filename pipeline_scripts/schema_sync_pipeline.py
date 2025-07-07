@@ -1,461 +1,364 @@
 #!/usr/bin/env python3
 """
-LWS CloudPipe v2 - Schema Synchronization Pipeline
-
-This script loads data from Azure Blob Storage into Snowflake tables using COPY INTO commands.
-It handles schema synchronization and data loading for all configured tables.
+Schema Synchronization Pipeline - Read-Only Report Mode
+Compares CSV headers from Azure with Snowflake table schemas and reports variances.
 """
 
+import json
 import os
 import sys
-import json
+import re
 import base64
-import io
-import pandas as pd
+from datetime import datetime
+from typing import Dict, List, Set, Tuple
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+
+# Add the project root to the Python path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from helper_scripts.Utils.logger import log
 import snowflake.connector
-from snowflake.connector.errors import ProgrammingError
+from azure.storage.blob import BlobServiceClient
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.backends import default_backend
 
-# Add helper_scripts to path
-sys.path.append(str(Path(__file__).parent.parent / "helper_scripts" / "Utils"))
-from logger import pipeline_logger, log
+def load_settings():
+    """Load settings from settings.json"""
+    try:
+        with open('settings.json', 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        log("SCHEMA_SYNC", "settings.json not found", "ERROR")
+        sys.exit(1)
 
-class SchemaSyncPipeline:
-    def __init__(self):
-        """Initialize the schema synchronization pipeline."""
-        self.base_dir = Path(__file__).parent.parent
-        self.config_dir = self.base_dir / "config_files"
-        self.credentials = self.load_credentials()
-        self.table_mapping = self.load_table_mapping()
-        
-        # Initialize results tracking
-        self.results = {
-            "start_time": None,
-            "end_time": None,
-            "tables_processed": 0,
-            "tables_successful": 0,
-            "tables_failed": 0,
-            "details": []
-        }
-        
-        log("SCHEMA_SYNC", "Schema synchronization pipeline initialized", "INFO")
+def load_table_mapping():
+    """Load table mapping from config_files/table_mapping.json"""
+    with open('config_files/table_mapping.json', 'r') as f:
+        return json.load(f)
+
+def get_snowflake_connection():
+    """Get Snowflake connection using flat settings.json keys and a decoded private key."""
+    settings = load_settings()
+    private_key_path = settings.get('SNOWFLAKE_PRIVATE_KEY_PATH', 'config_files/snowflake_private_key.txt')
+    with open(private_key_path, 'rb') as key_file:
+        p_key = serialization.load_pem_private_key(
+            key_file.read(),
+            password=None,
+            backend=default_backend()
+        )
+    pkb = p_key.private_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption()
+    )
+    conn = snowflake.connector.connect(
+        account=settings['SNOWFLAKE_ACCOUNT'],
+        user=settings['SNOWFLAKE_USER'],
+        private_key=pkb,
+        warehouse=settings['SNOWFLAKE_WAREHOUSE'],
+        database=settings['SNOWFLAKE_DATABASE']
+    )
+    return conn
+
+def get_azure_blob_service_client():
+    """Get Azure Blob Service Client using flat settings.json keys"""
+    settings = load_settings()
+    connection_string = settings['AZURE_STORAGE_CONNECTION_STRING']
+    return BlobServiceClient.from_connection_string(connection_string)
+
+def get_snowflake_columns(cursor, database: str, schema: str, table_name: str) -> Dict[str, str]:
+    """Get column information from Snowflake table"""
+    query = f"""
+    SELECT COLUMN_NAME, DATA_TYPE 
+    FROM {database}.INFORMATION_SCHEMA.COLUMNS 
+    WHERE TABLE_SCHEMA = '{schema}' AND TABLE_NAME = '{table_name}'
+    ORDER BY ORDINAL_POSITION
+    """
+    cursor.execute(query)
+    return {row[0]: row[1] for row in cursor.fetchall()}
+
+def get_csv_headers(blob_service_client, container_name: str, blob_name: str) -> List[str]:
+    """Get CSV headers from Azure blob"""
+    try:
+        blob_client = blob_service_client.get_blob_client(container=container_name, blob=blob_name)
+        stream = blob_client.download_blob()
+        # Read first line (header) and decode
+        header_line = stream.readall().decode('utf-8').splitlines()[0]
+        return [col.strip() for col in header_line.split(',')]
+    except Exception as e:
+        log("SCHEMA_SYNC", f"Error reading CSV headers from {blob_name}: {str(e)}", "ERROR")
+        return []
+
+def analyze_schema_variance(cursor, database: str, schema: str, table_name: str, csv_columns: List[str]) -> Dict:
+    """Analyze schema variance between CSV and Snowflake table"""
+    snowflake_columns = get_snowflake_columns(cursor, database, schema, table_name)
     
-    def load_credentials(self) -> Dict[str, Any]:
-        """Load credentials from settings.json."""
-        cred_file = self.base_dir / "settings.json"
-        if not cred_file.exists():
-            log("SCHEMA_SYNC", "Missing settings.json file!", "ERROR")
-            return {}
-        with open(cred_file, "r") as f:
-            return json.load(f)
+    # Build safe column name mappings
+    def safe(col):
+        return re.sub(r'[^a-zA-Z0-9_]', '_', col).lower()
     
-    def load_table_mapping(self) -> List[Dict[str, Any]]:
-        """Load table mapping configuration."""
-        mapping_path = self.base_dir / "config_files" / "table_mapping.json"
-        if not mapping_path.exists():
-            log("SCHEMA_SYNC", "Missing table_mapping.json file!", "ERROR")
-            return []
-        with open(mapping_path, "r", encoding="utf-8") as f:
-            return json.load(f)
+    snowflake_safe_set = set(safe(col) for col in snowflake_columns.keys())
+    csv_safe_map = {safe(col): col for col in csv_columns}
     
-    def get_snowflake_connection(self):
-        """Get Snowflake connection."""
-        try:
-            account = self.credentials.get("SNOWFLAKE_ACCOUNT")
-            user = self.credentials.get("SNOWFLAKE_USER")
-            warehouse = self.credentials.get("SNOWFLAKE_WAREHOUSE")
-            database = self.credentials.get("SNOWFLAKE_DATABASE")
-            private_key_path = self.config_dir / "snowflake_private_key.txt"
-            
-            if not all([account, user, warehouse, database]) or not private_key_path.exists():
-                log("SCHEMA_SYNC", "Missing Snowflake configuration", "ERROR")
-                return None
-            
-            # Read private key
-            with open(private_key_path, 'r') as f:
-                private_key = f.read().strip()
-            
-            # Connect to Snowflake
-            conn = snowflake.connector.connect(
-                account=account,
-                user=user,
-                private_key=private_key,
-                warehouse=warehouse,
-                database=database
-            )
-            
-            log("SCHEMA_SYNC", "Successfully connected to Snowflake", "INFO")
-            return conn
-            
-        except Exception as e:
-            log("SCHEMA_SYNC", f"Failed to connect to Snowflake: {str(e)}", "ERROR")
-            return None
+    # Find missing columns (in CSV but not in Snowflake)
+    missing_in_snowflake = []
+    for safe_col, orig_col in csv_safe_map.items():
+        if safe_col not in snowflake_safe_set:
+            missing_in_snowflake.append(orig_col)
     
-    def create_file_format_if_not_exists(self, cursor, database: str, schema: str):
-        """Create standard CSV file format if it doesn't exist."""
-        try:
-            # Check if file format exists
-            cursor.execute(f"""
-                SELECT COUNT(*) 
-                FROM {database}.INFORMATION_SCHEMA.FILE_FORMATS 
-                WHERE FILE_FORMAT_NAME = 'CSV_STANDARD' 
-                AND FILE_FORMAT_SCHEMA = '{schema}'
-            """)
-            
-            if cursor.fetchone()[0] == 0:
-                # Create file format
-                cursor.execute(f"""
-                    CREATE OR REPLACE FILE FORMAT {database}.{schema}.CSV_STANDARD
-                    TYPE = CSV
-                    FIELD_DELIMITER = ','
-                    RECORD_DELIMITER = '\\n'
-                    SKIP_HEADER = 1
-                    FIELD_OPTIONALLY_ENCLOSED_BY = '"'
-                    TRIM_SPACE = TRUE
-                    ERROR_ON_COLUMN_COUNT_MISMATCH = FALSE
-                    EMPTY_FIELD_AS_NULL = TRUE
-                    NULL_IF = ('NULL', 'null', '')
-                """)
-                log("SCHEMA_SYNC", f"Created file format {database}.{schema}.CSV_STANDARD", "INFO")
-            else:
-                log("SCHEMA_SYNC", f"File format {database}.{schema}.CSV_STANDARD already exists", "INFO")
-                
-        except Exception as e:
-            log("SCHEMA_SYNC", f"Error creating file format: {str(e)}", "ERROR")
-            raise
+    # Find extra columns (in Snowflake but not in CSV)
+    extra_in_snowflake = []
+    for col in snowflake_columns.keys():
+        if safe(col) not in csv_safe_map:
+            extra_in_snowflake.append(col)
     
-    def create_stage_if_not_exists(self, cursor, database: str, schema: str, table_name: str):
-        """Create external stage for Azure Blob Storage if it doesn't exist."""
-        try:
-            stage_name = f"{database}_{schema}_{table_name}_STAGE"
-            full_stage_name = f"{database}.{schema}.{stage_name}"
-            
-            # Check if stage exists
-            cursor.execute(f"""
-                SELECT COUNT(*) 
-                FROM {database}.INFORMATION_SCHEMA.STAGES 
-                WHERE STAGE_NAME = '{stage_name}' 
-                AND STAGE_SCHEMA = '{schema}'
-            """)
-            
-            if cursor.fetchone()[0] == 0:
-                # Get Azure storage credentials from connection string
-                connection_string = self.credentials.get("AZURE_STORAGE_CONNECTION_STRING")
-                container_name = self.credentials.get("BLOB_CONTAINER", "pbi25")
-                
-                if not connection_string:
-                    log("SCHEMA_SYNC", "Missing Azure Storage connection string", "ERROR")
-                    return None
-                
-                # Extract storage account name and key from connection string
-                storage_account = None
-                storage_key = None
-                for part in connection_string.split(';'):
-                    if part.startswith('AccountName='):
-                        storage_account = part.split('=')[1]
-                    elif part.startswith('AccountKey='):
-                        storage_key = part.split('=')[1]
-                
-                if not storage_account or not storage_key:
-                    log("SCHEMA_SYNC", "Could not extract storage account or key from connection string", "ERROR")
-                    return None
-                
-                # Create stage using connection string
-                cursor.execute(f"""
-                    CREATE OR REPLACE STAGE {full_stage_name}
-                    URL = 'azure://{storage_account}.blob.core.windows.net/{container_name}/'
-                    CREDENTIALS = (
-                        AZURE_STORAGE_ACCOUNT = '{storage_account}',
-                        AZURE_STORAGE_KEY = '{storage_key}'
-                    )
-                """)
-                log("SCHEMA_SYNC", f"Created stage {full_stage_name}", "INFO")
-            else:
-                log("SCHEMA_SYNC", f"Stage {full_stage_name} already exists", "INFO")
-            
-            return full_stage_name
-            
-        except Exception as e:
-            log("SCHEMA_SYNC", f"Error creating stage: {str(e)}", "ERROR")
-            return None
+    # Find matching columns (case-insensitive)
+    matching_columns = []
+    for col in snowflake_columns.keys():
+        if safe(col) in csv_safe_map:
+            matching_columns.append(col)
     
-    def check_table_exists(self, cursor, database: str, schema: str, table_name: str) -> bool:
-        """Check if a table exists in Snowflake."""
-        try:
-            cursor.execute(f"""
-                SELECT COUNT(*) 
-                FROM {database}.INFORMATION_SCHEMA.TABLES 
-                WHERE TABLE_NAME = '{table_name}' 
-                AND TABLE_SCHEMA = '{schema}'
-            """)
-            return cursor.fetchone()[0] > 0
-        except Exception as e:
-            log("SCHEMA_SYNC", f"Error checking table existence: {str(e)}", "ERROR")
-            return False
+    return {
+        'table_name': f"{database}.{schema}.{table_name}",
+        'csv_column_count': len(csv_columns),
+        'snowflake_column_count': len(snowflake_columns),
+        'matching_columns': matching_columns,
+        'missing_in_snowflake': missing_in_snowflake,
+        'extra_in_snowflake': extra_in_snowflake,
+        'csv_columns': csv_columns,
+        'snowflake_columns': list(snowflake_columns.keys()),
+        'snowflake_column_types': snowflake_columns
+    }
+
+def analyze_and_reconcile_table(cursor, database, schema, table_name, csv_columns):
+    # 1. Get current Snowflake columns
+    snowflake_columns = get_snowflake_columns(cursor, database, schema, table_name)
+    def safe(col):
+        return re.sub(r'[^a-zA-Z0-9_]', '_', col).lower()
     
-    def create_table_from_csv_schema(self, cursor, database: str, schema: str, table_name: str, csv_blob_name: str) -> bool:
-        """Create a table based on CSV schema from Azure Blob Storage."""
-        try:
-            # Get Azure Blob Storage client
-            from azure.storage.blob import BlobServiceClient
-            
-            connection_string = self.credentials.get("AZURE_STORAGE_CONNECTION_STRING")
-            container_name = self.credentials.get("BLOB_CONTAINER", "pbi25")
-            
-            if not connection_string:
-                log("SCHEMA_SYNC", "Missing Azure Storage connection string", "ERROR")
-                return False
-            
-            # Get CSV from Azure
-            blob_service_client = BlobServiceClient.from_connection_string(connection_string)
-            blob_client = blob_service_client.get_blob_client(container=container_name, blob=csv_blob_name)
-            
-            # Download first few rows to infer schema
-            stream = blob_client.download_blob()
-            csv_content = stream.readall().decode('utf-8')
-            
-            # Read first few lines to get headers
-            lines = csv_content.split('\n')
-            if len(lines) < 2:
-                log("SCHEMA_SYNC", f"CSV file {csv_blob_name} is empty or invalid", "ERROR")
-                return False
-            
-            headers = lines[0].split(',')
-            sample_data = lines[1:6]  # Get a few sample rows
-            
-            # Create DataFrame to infer types
-            sample_df = pd.read_csv(io.StringIO('\n'.join([lines[0]] + sample_data)))
-            
-            # Generate CREATE TABLE statement
-            create_table_sql = f"CREATE OR REPLACE TABLE {database}.{schema}.{table_name} (\n"
-            columns = []
-            
-            for col_name, dtype in sample_df.dtypes.items():
-                # Map pandas dtypes to Snowflake types
-                if 'int' in str(dtype):
-                    snowflake_type = 'NUMBER'
-                elif 'float' in str(dtype):
-                    snowflake_type = 'FLOAT'
-                elif 'datetime' in str(dtype):
-                    snowflake_type = 'TIMESTAMP'
-                elif 'bool' in str(dtype):
-                    snowflake_type = 'BOOLEAN'
+    # Build mappings for comparison
+    snowflake_safe_to_orig = {safe(col): col for col in snowflake_columns.keys()}
+    csv_safe_to_orig = {safe(col): col for col in csv_columns}
+    
+    # Log what we're comparing
+    log("SCHEMA_SYNC", f"Comparing {len(csv_columns)} CSV columns vs {len(snowflake_columns)} Snowflake columns", "INFO")
+    
+    # 2. Add missing columns (present in CSV, not in Snowflake)
+    added_columns = []
+    for safe_csv_col, orig_csv_col in csv_safe_to_orig.items():
+        log("SCHEMA_SYNC", f"Checking CSV column: '{orig_csv_col}' (safe: {safe_csv_col})", "DEBUG")
+        if safe_csv_col not in snowflake_safe_to_orig:
+            log("SCHEMA_SYNC", f"Adding missing column: '{orig_csv_col}' to {database}.{schema}.{table_name}", "INFO")
+            try:
+                # Infer column type based on keywords
+                col_lower = orig_csv_col.lower()
+                if "date" in col_lower:
+                    col_type = "DATE"
+                elif any(kw in col_lower for kw in ["amount", "cost", "price", "total", "qty", "number"]):
+                    col_type = "FLOAT"
+                elif "id" in col_lower:
+                    col_type = "VARCHAR(255)"
                 else:
-                    snowflake_type = 'VARCHAR'
-                
-                # Clean column name
-                clean_col_name = col_name.strip().replace(' ', '_').replace('-', '_')
-                columns.append(f"    {clean_col_name} {snowflake_type}")
-            
-            create_table_sql += ',\n'.join(columns) + '\n)'
-            
-            # Execute CREATE TABLE
-            cursor.execute(create_table_sql)
-            log("SCHEMA_SYNC", f"Created table {database}.{schema}.{table_name}", "INFO")
-            return True
-            
-        except Exception as e:
-            log("SCHEMA_SYNC", f"Error creating table from CSV schema: {str(e)}", "ERROR")
-            return False
+                    col_type = "VARCHAR(255)"
+                sql = f'ALTER TABLE "{database}"."{schema}"."{table_name}" ADD COLUMN "{orig_csv_col}" {col_type}'
+                log("SCHEMA_SYNC", f"Executing SQL: {sql}", "DEBUG")
+                cursor.execute(sql)
+                added_columns.append(orig_csv_col)
+                log("SCHEMA_SYNC", f"Successfully added column: '{orig_csv_col}'", "INFO")
+            except Exception as e:
+                log("SCHEMA_SYNC", f"Failed to add column '{orig_csv_col}': {str(e)}", "ERROR")
     
-    def load_data_into_table(self, cursor, database: str, schema: str, table_name: str, stage_name: str, csv_blob_name: str) -> bool:
-        """Load data from Azure Blob Storage into Snowflake table using COPY INTO."""
-        try:
-            # Set context
-            cursor.execute(f"USE DATABASE {database}")
-            cursor.execute(f"USE SCHEMA {schema}")
-            
-            # Execute COPY INTO command
-            copy_sql = f"""
-            COPY INTO {database}.{schema}.{table_name}
-            FROM @{stage_name}
-            FILES = ('{csv_blob_name}')
-            FILE_FORMAT = {database}.{schema}.CSV_STANDARD
-            ON_ERROR = CONTINUE
-            VALIDATION_MODE = RETURN_ERRORS
-            FORCE = TRUE
-            """
-            
-            log("SCHEMA_SYNC", f"Executing COPY INTO for {table_name}", "INFO")
-            cursor.execute(copy_sql)
-            
-            # Get load results
-            result = cursor.fetchone()
-            if result:
-                log("SCHEMA_SYNC", f"COPY INTO completed for {table_name}: {result}", "INFO")
-            
-            return True
-            
-        except Exception as e:
-            log("SCHEMA_SYNC", f"Error loading data into {table_name}: {str(e)}", "ERROR")
-            return False
+    # 3. Drop extra columns (present in Snowflake, not in CSV)
+    dropped_columns = []
+    for safe_snowflake_col, orig_snowflake_col in snowflake_safe_to_orig.items():
+        log("SCHEMA_SYNC", f"Checking Snowflake column: '{orig_snowflake_col}' (safe: {safe_snowflake_col})", "DEBUG")
+        if safe_snowflake_col not in csv_safe_to_orig:
+            log("SCHEMA_SYNC", f"Dropping extra column: '{orig_snowflake_col}' from {database}.{schema}.{table_name}", "INFO")
+            try:
+                sql = f'ALTER TABLE "{database}"."{schema}"."{table_name}" DROP COLUMN "{orig_snowflake_col}"'
+                log("SCHEMA_SYNC", f"Executing SQL: {sql}", "DEBUG")
+                cursor.execute(sql)
+                dropped_columns.append(orig_snowflake_col)
+                log("SCHEMA_SYNC", f"Successfully dropped column: '{orig_snowflake_col}'", "INFO")
+            except Exception as e:
+                log("SCHEMA_SYNC", f"Failed to drop column '{orig_snowflake_col}': {str(e)}", "ERROR")
     
-    def verify_data_load(self, cursor, database: str, schema: str, table_name: str) -> Dict[str, Any]:
-        """Verify that data was loaded successfully."""
-        try:
-            # Get row count
-            cursor.execute(f"SELECT COUNT(*) FROM {database}.{schema}.{table_name}")
-            row_count = cursor.fetchone()[0]
-            
-            # Get column count
-            cursor.execute(f"""
-                SELECT COUNT(*) 
-                FROM {database}.INFORMATION_SCHEMA.COLUMNS 
-                WHERE TABLE_NAME = '{table_name}' 
-                AND TABLE_SCHEMA = '{schema}'
-            """)
-            column_count = cursor.fetchone()[0]
-            
-            return {
-                "table_name": table_name,
-                "row_count": row_count,
-                "column_count": column_count,
-                "status": "success" if row_count > 0 else "warning"
-            }
-            
-        except Exception as e:
-            log("SCHEMA_SYNC", f"Error verifying data load for {table_name}: {str(e)}", "ERROR")
-            return {
-                "table_name": table_name,
-                "row_count": 0,
-                "column_count": 0,
-                "status": "error",
-                "error": str(e)
-            }
+    # 4. Re-read Snowflake schema after changes
+    if added_columns or dropped_columns:
+        log("SCHEMA_SYNC", f"Re-reading schema after changes (added: {len(added_columns)}, dropped: {len(dropped_columns)})", "INFO")
+        snowflake_columns = get_snowflake_columns(cursor, database, schema, table_name)
+        snowflake_safe_to_orig = {safe(col): col for col in snowflake_columns.keys()}
     
-    def process_table(self, cursor, mapping: Dict[str, Any]) -> Dict[str, Any]:
-        """Process a single table mapping."""
-        table_result = {
-            "table_name": mapping["snowflake_table"],
-            "status": "failed",
-            "error": None,
-            "row_count": 0,
-            "column_count": 0
-        }
-        
-        try:
-            # Parse table information
-            table_parts = mapping["snowflake_table"].split(".")
-            if len(table_parts) != 3:
-                raise ValueError(f"Invalid table name format: {mapping['snowflake_table']}")
-            
-            database, schema, table_name = table_parts
-            
-            log("SCHEMA_SYNC", f"Processing table: {database}.{schema}.{table_name}", "INFO")
-            
-            # Create file format if needed
-            self.create_file_format_if_not_exists(cursor, database, schema)
-            
-            # Create stage if needed
-            stage_name = self.create_stage_if_not_exists(cursor, database, schema, table_name)
-            if not stage_name:
-                raise Exception("Failed to create stage")
-            
-            # Check if table exists, create if not
-            if not self.check_table_exists(cursor, database, schema, table_name):
-                csv_blob_name = f"{mapping['azure_csv_name']}.csv"
-                if not self.create_table_from_csv_schema(cursor, database, schema, table_name, csv_blob_name):
-                    raise Exception("Failed to create table from CSV schema")
-            
-            # Load data into table
-            csv_blob_name = f"{mapping['azure_csv_name']}.csv"
-            if not self.load_data_into_table(cursor, database, schema, table_name, stage_name, csv_blob_name):
-                raise Exception("Failed to load data into table")
-            
-            # Verify data load
-            verification = self.verify_data_load(cursor, database, schema, table_name)
-            table_result.update(verification)
-            table_result["status"] = "success"
-            
-            log("SCHEMA_SYNC", f"Successfully processed {table_name}: {verification['row_count']} rows", "INFO")
-            
-        except Exception as e:
-            table_result["error"] = str(e)
-            log("SCHEMA_SYNC", f"Failed to process {mapping['snowflake_table']}: {str(e)}", "ERROR")
-        
-        return table_result
+    # 5. Generate final variance report
+    missing_in_snowflake = []
+    extra_in_snowflake = []
+    matching_columns = []
     
-    def run_pipeline(self) -> Dict[str, Any]:
-        """Run the complete schema synchronization pipeline."""
-        self.results["start_time"] = pd.Timestamp.now().isoformat()
+    for safe_csv_col, orig_csv_col in csv_safe_to_orig.items():
+        if safe_csv_col not in snowflake_safe_to_orig:
+            missing_in_snowflake.append(orig_csv_col)
+        else:
+            matching_columns.append(orig_csv_col)
+    
+    for safe_snowflake_col, orig_snowflake_col in snowflake_safe_to_orig.items():
+        if safe_snowflake_col not in csv_safe_to_orig:
+            extra_in_snowflake.append(orig_snowflake_col)
+    
+    return {
+        'table_name': f"{database}.{schema}.{table_name}",
+        'csv_columns': len(csv_columns),
+        'snowflake_columns': len(snowflake_columns),
+        'missing_in_snowflake': missing_in_snowflake,
+        'extra_in_snowflake': extra_in_snowflake,
+        'matching_columns': len(matching_columns),
+        'added_columns': added_columns,
+        'dropped_columns': dropped_columns
+    }
+
+def generate_schema_report(analysis_results: List[Dict]) -> str:
+    """Generate a comprehensive schema variance report"""
+    report = []
+    report.append("=" * 80)
+    report.append("SCHEMA VARIANCE ANALYSIS REPORT")
+    report.append("=" * 80)
+    report.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    report.append("")
+    
+    total_tables = len(analysis_results)
+    tables_with_issues = sum(1 for result in analysis_results if result['missing_in_snowflake'] or result['extra_in_snowflake'])
+    
+    report.append(f"SUMMARY:")
+    report.append(f"  Total Tables Analyzed: {total_tables}")
+    report.append(f"  Tables with Schema Variances: {tables_with_issues}")
+    report.append(f"  Tables with Perfect Match: {total_tables - tables_with_issues}")
+    report.append("")
+    
+    for i, result in enumerate(analysis_results, 1):
+        report.append(f"TABLE {i}: {result['table_name']}")
+        report.append("-" * 60)
+        report.append(f"CSV Columns: {result['csv_columns']}")
+        report.append(f"Snowflake Columns: {result['snowflake_columns']}")
+        report.append("")
         
-        log("SCHEMA_SYNC", "Starting schema synchronization pipeline", "INFO")
+        if result['missing_in_snowflake']:
+            report.append("MISSING IN SNOWFLAKE (need to be added):")
+            for col in result['missing_in_snowflake']:
+                report.append(f"  - {col}")
+            report.append("")
         
-        # Connect to Snowflake
-        conn = self.get_snowflake_connection()
-        if not conn:
-            self.results["error"] = "Failed to connect to Snowflake"
-            return self.results
+        if result['extra_in_snowflake']:
+            report.append("EXTRA IN SNOWFLAKE (not in CSV):")
+            for col in result['extra_in_snowflake']:
+                report.append(f"  - {col}")
+            report.append("")
         
-        cursor = conn.cursor()
+        if not result['missing_in_snowflake'] and not result['extra_in_snowflake']:
+            report.append("✅ PERFECT MATCH - No schema variances detected")
+            report.append("")
         
-        try:
-            # Process each table in the mapping
-            for mapping in self.table_mapping:
-                self.results["tables_processed"] += 1
-                
-                table_result = self.process_table(cursor, mapping)
-                self.results["details"].append(table_result)
-                
-                if table_result["status"] == "success":
-                    self.results["tables_successful"] += 1
-                else:
-                    self.results["tables_failed"] += 1
-                
-                log("SCHEMA_SYNC", f"Processed {self.results['tables_processed']}/{len(self.table_mapping)} tables", "INFO")
-            
-            # Log final results
-            self.results["end_time"] = pd.Timestamp.now().isoformat()
-            
-            log("SCHEMA_SYNC", f"Pipeline completed: {self.results['tables_successful']}/{self.results['tables_processed']} tables successful", "INFO")
-            
-            # Log results to JSON
-            pipeline_logger.log_json("SCHEMA_SYNC", self.results)
-            
-        except Exception as e:
-            log("SCHEMA_SYNC", f"Critical pipeline error: {str(e)}", "ERROR")
-            self.results["error"] = str(e)
+        report.append(f"Matching Columns: {result['matching_columns']}")
+        report.append("")
         
-        finally:
-            cursor.close()
-            conn.close()
+        # Show column type information for matching columns
+        if result['matching_columns'] > 0:
+            report.append("COLUMN TYPE ANALYSIS (matching columns):")
+            # Note: Column type analysis not available in reconcile mode
+            report.append("  (Column types not shown in reconcile mode)")
+            report.append("")
         
-        return self.results
+        report.append("")
+    
+    return "\n".join(report)
 
 def main():
-    """Main entry point for the schema synchronization pipeline."""
+    """Main function to run schema variance analysis"""
+    log("SCHEMA_SYNC", "Starting schema variance analysis and reconciliation", "INFO")
+    
+    # Load settings
+    settings = load_settings()
+    table_mapping = load_table_mapping()
+    
+    # Get connections
     try:
-        pipeline = SchemaSyncPipeline()
-        results = pipeline.run_pipeline()
-        
-        # Print summary
-        print("\n" + "="*60)
-        print("SCHEMA SYNCHRONIZATION PIPELINE SUMMARY")
-        print("="*60)
-        print(f"Start Time: {results['start_time']}")
-        print(f"End Time: {results['end_time']}")
-        print(f"Tables Processed: {results['tables_processed']}")
-        print(f"Successful: {results['tables_successful']}")
-        print(f"Failed: {results['tables_failed']}")
-        
-        if results.get("error"):
-            print(f"Pipeline Error: {results['error']}")
-        
-        print("\nTable Results:")
-        for detail in results["details"]:
-            status_symbol = "✅" if detail["status"] == "success" else "❌"
-            print(f"  {status_symbol} {detail['table_name']}: {detail['row_count']} rows, {detail['column_count']} columns")
-            if detail.get("error"):
-                print(f"    Error: {detail['error']}")
-        
-        print("="*60)
-        
-        return 0 if results["tables_successful"] > 0 else 1
-        
+        snowflake_conn = get_snowflake_connection()
+        cursor = snowflake_conn.cursor()
+        log("SCHEMA_SYNC", "Successfully connected to Snowflake", "INFO")
     except Exception as e:
-        log("SCHEMA_SYNC", f"Critical pipeline error: {str(e)}", "CRITICAL")
-        return 1
+        log("SCHEMA_SYNC", f"Failed to connect to Snowflake: {str(e)}", "ERROR")
+        return False
+    
+    try:
+        blob_service_client = get_azure_blob_service_client()
+        log("SCHEMA_SYNC", "Successfully connected to Azure Blob Storage", "INFO")
+    except Exception as e:
+        log("SCHEMA_SYNC", f"Failed to connect to Azure Blob Storage: {str(e)}", "ERROR")
+        return False
+    
+    analysis_results = []
+    successful_tables = 0
+    failed_tables = 0
+    
+    for mapping in table_mapping:
+        database, schema, table_name = mapping['snowflake_table'].split('.')
+        blob_name = mapping['azure_csv_name'] + '.csv'
+        log("SCHEMA_SYNC", f"Analyzing table: {database}.{schema}.{table_name}", "INFO")
+        try:
+            # Get CSV headers
+            csv_columns = get_csv_headers(blob_service_client, settings['BLOB_CONTAINER'], blob_name)
+            if not csv_columns:
+                log("SCHEMA_SYNC", f"Failed to get CSV headers for {blob_name}", "ERROR")
+                failed_tables += 1
+                continue
+            # Analyze and reconcile schema
+            analysis = analyze_and_reconcile_table(cursor, database, schema, table_name, csv_columns)
+            analysis_results.append(analysis)
+            # Log summary for this table
+            missing_count = len(analysis['missing_in_snowflake'])
+            extra_count = len(analysis['extra_in_snowflake'])
+            if missing_count == 0 and extra_count == 0:
+                log("SCHEMA_SYNC", f"✅ Perfect schema match for {database}.{schema}.{table_name}", "INFO")
+            else:
+                log("SCHEMA_SYNC", f"⚠️  Schema variances found for {database}.{schema}.{table_name}: {missing_count} missing, {extra_count} extra", "WARNING")
+            successful_tables += 1
+        except Exception as e:
+            log("SCHEMA_SYNC", f"Error analyzing {database}.{schema}.{table_name}: {str(e)}", "ERROR")
+            failed_tables += 1
+    
+    # Generate and save report
+    report = generate_schema_report(analysis_results)
+    
+    # Save report to file
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    report_filename = f"schema_variance_report_{timestamp}.txt"
+    with open(report_filename, 'w', encoding='utf-8') as f:
+        f.write(report)
+    
+    # Also save as JSON for programmatic access
+    json_filename = f"schema_variance_analysis_{timestamp}.json"
+    with open(json_filename, 'w', encoding='utf-8') as f:
+        json.dump({
+            'timestamp': datetime.now().isoformat(),
+            'summary': {
+                'total_tables': len(table_mapping),
+                'successful': successful_tables,
+                'failed': failed_tables
+            },
+            'analysis_results': analysis_results
+        }, f, indent=2, ensure_ascii=False)
+    
+    # Print report to console
+    print("\n" + report)
+    print(f"\nReports saved to:")
+    print(f"  - {report_filename}")
+    print(f"  - {json_filename}")
+    
+    log("SCHEMA_SYNC", f"Analysis completed: {successful_tables} successful, {failed_tables} failed", "INFO")
+    
+    cursor.close()
+    snowflake_conn.close()
+    
+    return successful_tables > 0
 
 if __name__ == "__main__":
-    sys.exit(main()) 
+    success = main()
+    sys.exit(0 if success else 1) 

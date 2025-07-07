@@ -17,7 +17,7 @@ import base64
 
 # Add helper_scripts/Utils to path for logger import
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'helper_scripts', 'Utils'))
-from logger import pipeline_logger
+from helper_scripts.Utils.logger import pipeline_logger
 
 def clean_column_name(column_name):
     """
@@ -51,12 +51,23 @@ def get_snowflake_connection(settings):
     # Load private key for Snowflake
     private_key_path = os.path.join(os.path.dirname(__file__), '..', settings['SNOWFLAKE_PRIVATE_KEY_PATH'])
     
-    # Load private key (base64 DER format)
-    with open(private_key_path, "r") as key_file:
-        key_content = key_file.read().strip()
+    # Load private key in PEM format
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.backends import default_backend
     
-    # Decode base64 to get DER bytes
-    pkb = base64.b64decode(key_content)
+    with open(private_key_path, 'r') as f:
+        p_key = serialization.load_pem_private_key(
+            f.read().encode('utf-8'),
+            password=None,
+            backend=default_backend()
+        )
+    
+    # Convert to bytes format that Snowflake expects
+    pkb = p_key.private_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption()
+    )
     
     snowflake_config = {
         'user': settings['SNOWFLAKE_USER'],
@@ -118,56 +129,6 @@ def load_csv_from_azure(blob_service_client, container_name, blob_name):
         return df, None
     except Exception as e:
         return None, f"Error downloading {blob_name}: {str(e)}"
-
-def create_snowflake_table(cursor, table_name, df, database_schema):
-    """Create Snowflake table with appropriate schema and return fully qualified table name"""
-    try:
-        # Parse database and schema from the mapping
-        if '.' in database_schema:
-            db_schema_parts = database_schema.split('.')
-            if len(db_schema_parts) >= 2:
-                database = db_schema_parts[0]
-                schema = db_schema_parts[1]
-                # Use the database and schema
-                cursor.execute(f"USE DATABASE {database}")
-                cursor.execute(f"USE SCHEMA {schema}")
-        else:
-            database = database_schema
-            schema = 'PUBLIC'
-            cursor.execute(f"USE DATABASE {database}")
-            cursor.execute(f"USE SCHEMA {schema}")
-        
-        # Extract just the table name (last part after the dot)
-        simple_table_name = table_name.split('.')[-1]
-        
-        # Log current context
-        cursor.execute("SELECT CURRENT_DATABASE(), CURRENT_SCHEMA()")
-        db_ctx, schema_ctx = cursor.fetchone()
-        pipeline_logger.log("LOAD_FROM_AZURE", f"Context before CREATE TABLE: DB={db_ctx}, SCHEMA={schema_ctx}", "DEBUG")
-        
-        # Generate CREATE TABLE statement
-        columns_sql = []
-        for col in df.columns:
-            columns_sql.append(f'"{col}" VARCHAR')
-        
-        create_table_sql = f"""
-        CREATE OR REPLACE TABLE {simple_table_name} (
-            {', '.join(columns_sql)}
-        )
-        """
-        
-        pipeline_logger.log("LOAD_FROM_AZURE", f"CREATE TABLE SQL: {create_table_sql[:200]}...", "DEBUG")
-        cursor.execute(create_table_sql)
-        
-        # Log after creation
-        cursor.execute("SELECT CURRENT_DATABASE(), CURRENT_SCHEMA()")
-        db_ctx2, schema_ctx2 = cursor.fetchone()
-        pipeline_logger.log("LOAD_FROM_AZURE", f"Context after CREATE TABLE: DB={db_ctx2}, SCHEMA={schema_ctx2}", "DEBUG")
-        
-        # Return the simple table name for write_pandas (it will use current context)
-        return True, None, simple_table_name
-    except Exception as e:
-        return False, f"Error creating table {table_name}: {str(e)}", None
 
 def load_data_to_snowflake(conn, df, table_name):
     """Load DataFrame data into Snowflake table using current context"""
@@ -235,12 +196,14 @@ def load_from_azure():
     try:
         # Load settings
         pipeline_logger.log("LOAD_FROM_AZURE", "🔑 Loading Azure and Snowflake credentials", "INFO")
-        with open('../config_files/settings.json', 'r') as f:
+        settings_path = os.path.join(os.path.dirname(__file__), '..', 'config_files', 'settings.json')
+        with open(settings_path, 'r') as f:
             settings = json.load(f)
         
         # Load table mapping
         pipeline_logger.log("LOAD_FROM_AZURE", "📋 Loading table mapping configuration", "INFO")
-        with open('../config_files/table_mapping.json', 'r') as f:
+        mapping_path = os.path.join(os.path.dirname(__file__), '..', 'config_files', 'table_mapping.json')
+        with open(mapping_path, 'r') as f:
             table_mapping = json.load(f)
         
         # Azure Blob Storage connection
@@ -255,6 +218,10 @@ def load_from_azure():
         # List available blobs in Azure container
         pipeline_logger.log("LOAD_FROM_AZURE", "📋 Listing available blobs in Azure container", "INFO")
         available_blobs, error = list_azure_blobs(blob_service_client, container_name)
+        
+        if available_blobs is None:
+            pipeline_logger.log("LOAD_FROM_AZURE", f"❌ No blobs returned from Azure: {error}", "ERROR")
+            return
         
         if error:
             pipeline_logger.log("LOAD_FROM_AZURE", f"❌ Failed to list Azure blobs: {error}", "ERROR")
@@ -308,10 +275,10 @@ def load_from_azure():
                 pipeline_logger.log("LOAD_FROM_AZURE", f"⬇️ Downloading {matching_blob} from Azure", "INFO")
                 df, error = load_csv_from_azure(blob_service_client, container_name, matching_blob)
                 
-                if error:
+                if df is None:
                     result['status'] = 'failed'
-                    result['error'] = error
-                    pipeline_logger.log("LOAD_FROM_AZURE", f"❌ Failed to download {matching_blob}: {error}", "ERROR")
+                    result['error'] = error or 'Failed to load CSV from Azure.'
+                    pipeline_logger.log("LOAD_FROM_AZURE", f"❌ DataFrame is None for {matching_blob}: {error}", "ERROR")
                     results.append(result)
                     continue
                 
@@ -340,15 +307,16 @@ def load_from_azure():
                 with open(mapping_file, 'w') as f:
                     json.dump(column_mapping, f, indent=2)
                 
-                # Create Snowflake table
-                pipeline_logger.log("LOAD_FROM_AZURE", f"🏗️ Creating Snowflake table: {table_name}", "INFO")
-                success, error, simple_table_name = create_snowflake_table(cursor, table_name, df, database_schema)
-                if not success:
+                # Check if table exists
+                cursor.execute(f"SHOW TABLES LIKE '{table_name.split('.')[-1]}'")
+                if not cursor.fetchone():
                     result['status'] = 'failed'
-                    result['error'] = error
-                    pipeline_logger.log("LOAD_FROM_AZURE", f"❌ Failed to create table {table_name}: {error}", "ERROR")
+                    result['error'] = f"Table {table_name} does not exist in Snowflake. Please create it before loading."
+                    pipeline_logger.log("LOAD_FROM_AZURE", f"❌ Table {table_name} does not exist in Snowflake.", "ERROR")
                     results.append(result)
                     continue
+                simple_table_name = table_name.split('.')[-1]
+                
                 # Load data to Snowflake
                 pipeline_logger.log("LOAD_FROM_AZURE", f"📤 Loading data into {simple_table_name}", "INFO")
                 success, rows_loaded, error = load_data_to_snowflake(conn, df, simple_table_name)

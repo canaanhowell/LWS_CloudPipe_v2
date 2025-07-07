@@ -1,7 +1,7 @@
 
 
 ## MISSION PARAMETERS
-**OBJECTIVE:** modify the pipeline_scripts/load_sungrow_from_azure.py to load all cleaned csv's as specified in config_files\table_mapping to their corresponding snowflake table and rename the script to load_from_azure
+**OBJECTIVE:** test the full pipeline
 
 **SUCCESS CRITERIA:** each snowflake table matches its corresponding azure storage csv identically
 
