@@ -11,22 +11,33 @@ import snowflake.connector
 import base64
 from datetime import datetime
 
-# Add helper_scripts/Utils to path for logger import
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'helper_scripts', 'Utils'))
-from logger import pipeline_logger
+# Robust logger import for local and container/module execution
+try:
+    from helper_scripts.Utils.logger import pipeline_logger
+except ImportError:
+    try:
+        from logger import pipeline_logger
+    except ImportError:
+        import sys, os
+        sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'helper_scripts', 'Utils')))
+        from logger import pipeline_logger
 
 def get_snowflake_connection(settings):
     """Create and return a Snowflake connection"""
-    # Load private key for Snowflake
-    private_key_path = os.path.join(os.path.dirname(__file__), '..', settings['SNOWFLAKE_PRIVATE_KEY_PATH'])
-    
-    # Load private key (base64 DER format)
-    with open(private_key_path, "r") as key_file:
-        key_content = key_file.read().strip()
-    
-    # Decode base64 to get DER bytes
-    pkb = base64.b64decode(key_content)
-    
+    private_key_path = 'config_files/snowflake_private_key.txt'
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.backends import default_backend
+    with open(private_key_path, 'r') as f:
+        p_key = serialization.load_pem_private_key(
+            f.read().encode('utf-8'),
+            password=None,
+            backend=default_backend()
+        )
+    pkb = p_key.private_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption()
+    )
     snowflake_config = {
         'user': settings['SNOWFLAKE_USER'],
         'account': settings['SNOWFLAKE_ACCOUNT'],
@@ -35,7 +46,6 @@ def get_snowflake_connection(settings):
         'database': settings['SNOWFLAKE_DATABASE'],
         'schema': 'PUBLIC'  # Default schema
     }
-    
     return snowflake.connector.connect(**snowflake_config)
 
 def truncate_all_tables():
@@ -46,12 +56,12 @@ def truncate_all_tables():
     try:
         # Load settings
         pipeline_logger.log("TRUNCATE_TABLES", "🔑 Loading Snowflake credentials", "INFO")
-        with open('../config_files/settings.json', 'r') as f:
+        with open('config_files/settings.json', 'r') as f:
             settings = json.load(f)
         
         # Load table mapping
         pipeline_logger.log("TRUNCATE_TABLES", "📋 Loading table mapping configuration", "INFO")
-        with open('../config_files/table_mapping.json', 'r') as f:
+        with open('config_files/table_mapping.json', 'r') as f:
             table_mapping = json.load(f)
         
         # Connect to Snowflake
@@ -136,7 +146,7 @@ def truncate_all_tables():
         pipeline_logger.log("TRUNCATE_TABLES", f"🎉 Truncation completed! Success: {successful}, Failed: {failed}, Total rows removed: {total_rows_truncated}", "INFO")
         
         # Save detailed results
-        results_file = "../logs/truncate_tables_results.json"
+        results_file = "logs/truncate_tables_results.json"
         with open(results_file, 'w') as f:
             json.dump({
                 'timestamp': datetime.now().isoformat(),

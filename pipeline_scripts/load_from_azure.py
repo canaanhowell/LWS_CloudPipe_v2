@@ -32,6 +32,24 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 def get_abs_path(rel_path):
     return os.path.abspath(os.path.join(SCRIPT_DIR, rel_path))
 
+def clean_unicode_chars(text):
+    """Clean problematic Unicode characters from text data"""
+    if pd.isna(text):
+        return text
+    
+    # Convert to string if not already
+    text = str(text)
+    
+    # Remove emoji and special Unicode characters that cause encoding issues
+    # This regex removes characters outside the basic Latin range and common symbols
+    import re
+    cleaned = re.sub(r'[^\x00-\x7F\u00A0-\u00FF\u0100-\u017F\u0180-\u024F\u1E00-\u1EFF\u2C60-\u2C7F\uA720-\uA7FF]', '', text)
+    
+    # Remove any remaining control characters except newlines and tabs
+    cleaned = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', cleaned)
+    
+    return cleaned.strip() if cleaned.strip() else None
+
 def clean_column_name(column_name):
     """
     Clean column names to be Snowflake-compatible
@@ -141,7 +159,14 @@ def load_csv_from_azure(blob_service_client, container_name, blob_name):
         
         # Download the CSV from Azure
         download_stream = blob_client.download_blob()
-        df = pd.read_csv(download_stream)
+        
+        # Read CSV with explicit UTF-8 encoding to handle Unicode characters
+        df = pd.read_csv(download_stream, encoding='utf-8')
+        
+        # Clean any problematic Unicode characters from string columns
+        for col in df.columns:
+            if df[col].dtype == 'object':
+                df[col] = df[col].apply(lambda x: clean_unicode_chars(x) if pd.notna(x) else x)
         
         return df, None
     except Exception as e:
@@ -182,7 +207,7 @@ def load_data_to_snowflake(conn, df, table_name):
         pipeline_logger.log("LOAD_FROM_AZURE", f"write_pandas target: {table_name}", "DEBUG")
         
         # First, truncate the table to ensure clean load
-        pipeline_logger.log("LOAD_FROM_AZURE", f"🗑️ Truncating table {table_name} before loading", "INFO")
+        pipeline_logger.log("LOAD_FROM_AZURE", f"Truncating table {table_name} before loading", "INFO")
         cursor.execute(f"TRUNCATE TABLE {table_name}")
         
         # Load data using write_pandas with overwrite=True
@@ -240,7 +265,7 @@ def load_from_azure():
             settings = json.load(f)
         
         # Load table mapping
-        pipeline_logger.log("LOAD_FROM_AZURE", "📋 Loading table mapping configuration", "INFO")
+        pipeline_logger.log("LOAD_FROM_AZURE", "Loading table mapping configuration", "INFO")
         mapping_path = get_abs_path('../config_files/table_mapping.json')
         with open(mapping_path, 'r') as f:
             table_mapping = json.load(f)
@@ -249,28 +274,28 @@ def load_from_azure():
         connection_string = settings['AZURE_STORAGE_CONNECTION_STRING']
         container_name = settings['BLOB_CONTAINER']
         
-        pipeline_logger.log("LOAD_FROM_AZURE", f"📦 Connecting to Azure Blob Storage: {container_name}", "INFO")
+        pipeline_logger.log("LOAD_FROM_AZURE", f"Connecting to Azure Blob Storage: {container_name}", "INFO")
         
         # Create blob service client
         blob_service_client = BlobServiceClient.from_connection_string(connection_string)
         
         # List available blobs in Azure container
-        pipeline_logger.log("LOAD_FROM_AZURE", "📋 Listing available blobs in Azure container", "INFO")
+        pipeline_logger.log("LOAD_FROM_AZURE", "Listing available blobs in Azure container", "INFO")
         available_blobs, error = list_azure_blobs(blob_service_client, container_name)
         
         if available_blobs is None:
-            pipeline_logger.log("LOAD_FROM_AZURE", f"❌ No blobs returned from Azure: {error}", "ERROR")
+            pipeline_logger.log("LOAD_FROM_AZURE", f"No blobs returned from Azure: {error}", "ERROR")
             return
         
         if error:
-            pipeline_logger.log("LOAD_FROM_AZURE", f"❌ Failed to list Azure blobs: {error}", "ERROR")
+            pipeline_logger.log("LOAD_FROM_AZURE", f"Failed to list Azure blobs: {error}", "ERROR")
             raise Exception(f"Failed to list Azure blobs: {error}")
         
-        pipeline_logger.log("LOAD_FROM_AZURE", f"📦 Found {len(available_blobs)} blobs in container", "INFO")
-        pipeline_logger.log("LOAD_FROM_AZURE", f"📋 Available blobs: {available_blobs[:10]}...", "INFO")
+        pipeline_logger.log("LOAD_FROM_AZURE", f"Found {len(available_blobs)} blobs in container", "INFO")
+        pipeline_logger.log("LOAD_FROM_AZURE", f"Available blobs: {available_blobs[:10]}...", "INFO")
         
         # Connect to Snowflake
-        pipeline_logger.log("LOAD_FROM_AZURE", "❄️ Connecting to Snowflake", "INFO")
+        pipeline_logger.log("LOAD_FROM_AZURE", "Connecting to Snowflake", "INFO")
         conn = get_snowflake_connection(settings)
         cursor = conn.cursor()
         
@@ -284,7 +309,7 @@ def load_from_azure():
             database_schema = mapping['snowflake_database']
             expected_rows = int(mapping['estimated_row_count'])
             
-            pipeline_logger.log("LOAD_FROM_AZURE", f"📊 Processing table {i}/{total_tables}: {table_name}", "INFO")
+            pipeline_logger.log("LOAD_FROM_AZURE", f"Processing table {i}/{total_tables}: {table_name}", "INFO")
             pipeline_logger.log_progress("LOAD_FROM_AZURE", i, total_tables, f"Processing {table_name}")
             
             result = {
@@ -298,30 +323,30 @@ def load_from_azure():
             
             try:
                 # Find matching blob in Azure
-                pipeline_logger.log("LOAD_FROM_AZURE", f"🔍 Looking for {azure_csv_name} in Azure container", "INFO")
+                pipeline_logger.log("LOAD_FROM_AZURE", f"Looking for {azure_csv_name} in Azure container", "INFO")
                 matching_blob = find_matching_blob(azure_csv_name, available_blobs)
                 
                 if not matching_blob:
                     result['status'] = 'failed'
                     result['error'] = f"Could not find matching blob for {azure_csv_name} in available blobs"
-                    pipeline_logger.log("LOAD_FROM_AZURE", f"❌ No matching blob found for {azure_csv_name}", "ERROR")
+                    pipeline_logger.log("LOAD_FROM_AZURE", f"No matching blob found for {azure_csv_name}", "ERROR")
                     results.append(result)
                     continue
                 
-                pipeline_logger.log("LOAD_FROM_AZURE", f"✅ Found matching blob: {matching_blob}", "INFO")
+                pipeline_logger.log("LOAD_FROM_AZURE", f"Found matching blob: {matching_blob}", "INFO")
                 
                 # Download CSV from Azure
-                pipeline_logger.log("LOAD_FROM_AZURE", f"⬇️ Downloading {matching_blob} from Azure", "INFO")
+                pipeline_logger.log("LOAD_FROM_AZURE", f"Downloading {matching_blob} from Azure", "INFO")
                 df, error = load_csv_from_azure(blob_service_client, container_name, matching_blob)
                 
                 if df is None:
                     result['status'] = 'failed'
                     result['error'] = error or 'Failed to load CSV from Azure.'
-                    pipeline_logger.log("LOAD_FROM_AZURE", f"❌ DataFrame is None for {matching_blob}: {error}", "ERROR")
+                    pipeline_logger.log("LOAD_FROM_AZURE", f"DataFrame is None for {matching_blob}: {error}", "ERROR")
                     results.append(result)
                     continue
                 
-                pipeline_logger.log("LOAD_FROM_AZURE", f"📊 Downloaded DataFrame shape: {df.shape}", "INFO")
+                pipeline_logger.log("LOAD_FROM_AZURE", f"Downloaded DataFrame shape: {df.shape}", "INFO")
                 
                 # Clean column names
                 column_mapping = {}
@@ -339,9 +364,9 @@ def load_from_azure():
                 df.columns = cleaned_columns
                 
                 # Debug: Print first few column names to verify cleaning
-                pipeline_logger.log("LOAD_FROM_AZURE", f"🔍 Sample cleaned columns: {list(df.columns[:5])}", "DEBUG")
+                pipeline_logger.log("LOAD_FROM_AZURE", f"Sample cleaned columns: {list(df.columns[:5])}", "DEBUG")
                 
-                pipeline_logger.log("LOAD_FROM_AZURE", f"🧹 Cleaned {len(df.columns)} columns for {table_name}", "INFO")
+                pipeline_logger.log("LOAD_FROM_AZURE", f"Cleaned {len(df.columns)} columns for {table_name}", "INFO")
                 
                 # Save column mapping for reference
                 mapping_file = get_abs_path(f'../logs/column_mapping_{table_name.replace(".", "_")}.json')
@@ -355,7 +380,7 @@ def load_from_azure():
                     if len(db_schema_parts) >= 2:
                         database = db_schema_parts[0]
                         schema = db_schema_parts[1]
-                        pipeline_logger.log("LOAD_FROM_AZURE", f"🔧 Setting context: USE DATABASE {database}; USE SCHEMA {schema}", "DEBUG")
+                        pipeline_logger.log("LOAD_FROM_AZURE", f"Setting context: USE DATABASE {database}; USE SCHEMA {schema}", "DEBUG")
                         cursor.execute(f"USE DATABASE {database}")
                         cursor.execute(f"USE SCHEMA {schema}")
                 
@@ -365,37 +390,37 @@ def load_from_azure():
                 if not cursor.fetchone():
                     result['status'] = 'failed'
                     result['error'] = f"Table {table_name} does not exist in Snowflake. Please create it before loading."
-                    pipeline_logger.log("LOAD_FROM_AZURE", f"❌ Table {table_name} does not exist in Snowflake.", "ERROR")
+                    pipeline_logger.log("LOAD_FROM_AZURE", f"Table {table_name} does not exist in Snowflake.", "ERROR")
                     results.append(result)
                     continue
                 
                 # Load data to Snowflake
-                pipeline_logger.log("LOAD_FROM_AZURE", f"📤 Loading data into {simple_table_name}", "INFO")
+                pipeline_logger.log("LOAD_FROM_AZURE", f"Loading data into {simple_table_name}", "INFO")
                 success, rows_loaded, error = load_data_to_snowflake(conn, df, simple_table_name)
                 if not success:
                     result['status'] = 'failed'
                     result['error'] = error
-                    pipeline_logger.log("LOAD_FROM_AZURE", f"❌ Failed to load data into {simple_table_name}: {error}", "ERROR")
+                    pipeline_logger.log("LOAD_FROM_AZURE", f"Failed to load data into {simple_table_name}: {error}", "ERROR")
                     results.append(result)
                     continue
                 result['rows_loaded'] = rows_loaded
                 
                 # Verify the data load
-                pipeline_logger.log("LOAD_FROM_AZURE", f"🔍 Verifying data load for {table_name}", "INFO")
+                pipeline_logger.log("LOAD_FROM_AZURE", f"Verifying data load for {table_name}", "INFO")
                 verification = verify_data_load(cursor, simple_table_name, expected_rows)
                 result['verification'] = verification
                 
                 if verification['match']:
                     result['status'] = 'success'
-                    pipeline_logger.log("LOAD_FROM_AZURE", f"✅ Successfully loaded {table_name}: {rows_loaded} rows", "INFO")
+                    pipeline_logger.log("LOAD_FROM_AZURE", f"Successfully loaded {table_name}: {rows_loaded} rows", "INFO")
                 else:
                     result['status'] = 'warning'
-                    pipeline_logger.log("LOAD_FROM_AZURE", f"⚠️ Row count mismatch for {table_name}: Expected {expected_rows}, got {verification['actual_count']}", "WARNING")
+                    pipeline_logger.log("LOAD_FROM_AZURE", f"Row count mismatch for {table_name}: Expected {expected_rows}, got {verification['actual_count']}", "WARNING")
                 
             except Exception as e:
                 result['status'] = 'failed'
                 result['error'] = str(e)
-                pipeline_logger.log("LOAD_FROM_AZURE", f"❌ Error processing {table_name}: {str(e)}", "ERROR")
+                pipeline_logger.log("LOAD_FROM_AZURE", f"Error processing {table_name}: {str(e)}", "ERROR")
             
             results.append(result)
         
@@ -408,7 +433,7 @@ def load_from_azure():
         failed = sum(1 for r in results if r['status'] == 'failed')
         warnings = sum(1 for r in results if r['status'] == 'warning')
         
-        pipeline_logger.log("LOAD_FROM_AZURE", f"🎉 Pipeline completed! Success: {successful}, Failed: {failed}, Warnings: {warnings}", "INFO")
+        pipeline_logger.log("LOAD_FROM_AZURE", f"Pipeline completed! Success: {successful}, Failed: {failed}, Warnings: {warnings}", "INFO")
         
         # Save detailed results
         results_file = get_abs_path('../logs/load_from_azure_results.json')
@@ -430,7 +455,7 @@ def load_from_azure():
                 'results': results
             }, f, indent=2, cls=DateTimeEncoder)
         
-        pipeline_logger.log("LOAD_FROM_AZURE", f"💾 Detailed results saved to: {results_file}", "INFO")
+        pipeline_logger.log("LOAD_FROM_AZURE", f"Detailed results saved to: {results_file}", "INFO")
         
         # Log JSON summary
         pipeline_logger.log_json("LOAD_FROM_AZURE", {
@@ -444,7 +469,7 @@ def load_from_azure():
         return results
         
     except Exception as e:
-        pipeline_logger.log("LOAD_FROM_AZURE", f"❌ Critical error in load_from_azure: {str(e)}", "ERROR")
+        pipeline_logger.log("LOAD_FROM_AZURE", f"Critical error in load_from_azure: {str(e)}", "ERROR")
         import traceback
         traceback.print_exc()
         raise

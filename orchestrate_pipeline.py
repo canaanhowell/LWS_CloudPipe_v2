@@ -49,7 +49,7 @@ class PipelineOrchestrator:
             data_query_script = self.base_dir / "pipeline_scripts" / "data_query.py"
             
             if not data_query_script.exists():
-                log("ORCHESTRATOR", f"❌ Data query script not found: {data_query_script}", "ERROR")
+                log("ORCHESTRATOR", f"Data query script not found: {data_query_script}", "ERROR")
                 return False
             
             log("ORCHESTRATOR", f"Executing: {data_query_script}", "INFO")
@@ -78,7 +78,7 @@ class PipelineOrchestrator:
                 }
                 return True
             else:
-                log("ORCHESTRATOR", f"❌ Stage 1: Data Query Pipeline failed with return code {result.returncode}", "ERROR")
+                log("ORCHESTRATOR", f"Stage 1: Data Query Pipeline failed with return code {result.returncode}", "ERROR")
                 self.results["stages"]["data_query"] = {
                     "status": "failed",
                     "return_code": result.returncode,
@@ -88,7 +88,7 @@ class PipelineOrchestrator:
                 return False
                 
         except Exception as e:
-            log("ORCHESTRATOR", f"❌ Stage 1: Exception during data query: {str(e)}", "ERROR")
+            log("ORCHESTRATOR", f"Stage 1: Exception during data query: {str(e)}", "ERROR")
             self.results["stages"]["data_query"] = {
                 "status": "error",
                 "error": str(e),
@@ -105,7 +105,7 @@ class PipelineOrchestrator:
             csv_cleaner_script = self.base_dir / "pipeline_scripts" / "csv_cleaner.py"
             
             if not csv_cleaner_script.exists():
-                log("ORCHESTRATOR", f"❌ CSV cleaner script not found: {csv_cleaner_script}", "ERROR")
+                log("ORCHESTRATOR", f"CSV cleaner script not found: {csv_cleaner_script}", "ERROR")
                 return False
             
             log("ORCHESTRATOR", f"Executing: {csv_cleaner_script}", "INFO")
@@ -208,56 +208,45 @@ class PipelineOrchestrator:
             }
             return False
     
-    def run_external_storage_verification(self) -> bool:
-        """Run the external storage integration verification."""
-        log("ORCHESTRATOR", "Starting Stage 5: External Storage Integration Verification", "INFO")
-        
+    def run_load_from_azure(self) -> bool:
+        """Run the Azure to Snowflake data loading pipeline."""
+        log("ORCHESTRATOR", "Starting Stage 4: Azure to Snowflake Data Load", "INFO")
         try:
-            # Path to verify_external_storage_integration.py
-            external_storage_verify_script = self.base_dir / "pipeline_scripts" / "verify_external_storage_integration.py"
-            
-            if not external_storage_verify_script.exists():
-                log("ORCHESTRATOR", f"❌ External storage verification script not found: {external_storage_verify_script}", "ERROR")
+            load_script = self.base_dir / "pipeline_scripts" / "load_from_azure.py"
+            if not load_script.exists():
+                log("ORCHESTRATOR", f"❌ Data load script not found: {load_script}", "ERROR")
                 return False
-            
-            log("ORCHESTRATOR", f"Executing: {external_storage_verify_script}", "INFO")
-            
-            # Run the external storage verification script
+            log("ORCHESTRATOR", f"Executing: {load_script}", "INFO")
             result = subprocess.run(
-                [sys.executable, str(external_storage_verify_script)],
+                [sys.executable, str(load_script)],
                 capture_output=True,
                 text=True,
                 cwd=self.base_dir
             )
-            
-            # Log the output
             if result.stdout:
-                log("ORCHESTRATOR", f"External storage verification stdout: {result.stdout}", "INFO")
+                log("ORCHESTRATOR", f"Data load stdout: {result.stdout}", "INFO")
             if result.stderr:
-                log("ORCHESTRATOR", f"External storage verification stderr: {result.stderr}", "WARNING")
-            
-            # Check if successful
+                log("ORCHESTRATOR", f"Data load stderr: {result.stderr}", "WARNING")
             if result.returncode == 0:
-                log("ORCHESTRATOR", "Stage 5: External Storage Integration Verification completed successfully", "INFO")
-                self.results["stages"]["external_storage_verification"] = {
+                log("ORCHESTRATOR", "Stage 4: Data Load completed successfully", "INFO")
+                self.results["stages"]["load_from_azure"] = {
                     "status": "success",
                     "return_code": result.returncode,
                     "timestamp": datetime.now().isoformat()
                 }
                 return True
             else:
-                log("ORCHESTRATOR", f"❌ Stage 5: External Storage Integration Verification failed with return code {result.returncode}", "ERROR")
-                self.results["stages"]["external_storage_verification"] = {
+                log("ORCHESTRATOR", f"❌ Stage 4: Data Load failed with return code {result.returncode}", "ERROR")
+                self.results["stages"]["load_from_azure"] = {
                     "status": "failed",
                     "return_code": result.returncode,
                     "error": result.stderr,
                     "timestamp": datetime.now().isoformat()
                 }
                 return False
-                
         except Exception as e:
-            log("ORCHESTRATOR", f"❌ Stage 5: Exception during external storage verification: {str(e)}", "ERROR")
-            self.results["stages"]["external_storage_verification"] = {
+            log("ORCHESTRATOR", f"❌ Stage 4: Exception during data load: {str(e)}", "ERROR")
+            self.results["stages"]["load_from_azure"] = {
                 "status": "error",
                 "error": str(e),
                 "timestamp": datetime.now().isoformat()
@@ -276,81 +265,97 @@ class PipelineOrchestrator:
         }
         
         if csv_dir.exists():
-            # Check for raw files
+            # Check for raw files locally
             raw_files = list(csv_dir.glob("*_raw.csv"))
             verification_results["raw_files"] = [f.name for f in raw_files]
             
-            # Check for cleaned files (based on table_mapping.json naming)
-            expected_cleaned_files = [
-                "LWS.PUBLIC.PROJECTS.csv",
-                "LWS.PUBLIC.SERVICE.csv", 
-                "LWS.PUBLIC.SUNGROW.csv",
-                "SEAL.PUBLIC.RESI.csv",
-                "SEAL.PUBLIC.SEAL_COMM_MERGED.csv",
-                "LWS.PUBLIC.GOOGLE_ANALYTICS.csv"
-            ]
-            
-            cleaned_files = []
-            for expected_file in expected_cleaned_files:
-                file_path = csv_dir / expected_file
-                if file_path.exists():
-                    cleaned_files.append(expected_file)
-                    log("ORCHESTRATOR", f"Found cleaned file: {expected_file}", "INFO")
+            # Check for cleaned files in Azure Blob Storage
+            try:
+                from azure.storage.blob import BlobServiceClient
+                import json
+                
+                # Load settings
+                settings_path = self.base_dir / "settings.json"
+                with open(settings_path, 'r') as f:
+                    settings = json.load(f)
+                
+                # Connect to Azure
+                connection_string = settings.get('AZURE_STORAGE_CONNECTION_STRING')
+                container_name = settings.get('BLOB_CONTAINER', 'pbi25')
+                
+                if connection_string:
+                    blob_service_client = BlobServiceClient.from_connection_string(connection_string)
+                    container_client = blob_service_client.get_container_client(container_name)
+                    
+                    # Expected cleaned file names from table_mapping.json
+                    expected_cleaned_files = [
+                        "LWS.PUBLIC.PROJECTS.csv",
+                        "LWS.PUBLIC.SERVICE.csv", 
+                        "LWS.PUBLIC.SUNGROW.csv",
+                        "SEAL.PUBLIC.RESI.csv",
+                        "SEAL.PUBLIC.SEAL_COMM_MERGED.csv",
+                        "LWS.PUBLIC.GOOGLE_ANALYTICS.csv"
+                    ]
+                    
+                    # List all blobs in container
+                    blob_list = [b.name for b in container_client.list_blobs()]
+                    
+                    cleaned_files = []
+                    for expected_file in expected_cleaned_files:
+                        if expected_file in blob_list:
+                            cleaned_files.append(expected_file)
+                            log("ORCHESTRATOR", f"Found cleaned file in Azure: {expected_file}", "INFO")
+                        else:
+                            log("ORCHESTRATOR", f"Missing cleaned file in Azure: {expected_file}", "WARNING")
+                    
+                    verification_results["cleaned_files"] = cleaned_files
+                    log("ORCHESTRATOR", f"Found {len(cleaned_files)}/{len(expected_cleaned_files)} cleaned files in Azure", "INFO")
                 else:
-                    log("ORCHESTRATOR", f"Missing cleaned file: {expected_file}", "WARNING")
+                    log("ORCHESTRATOR", "Azure connection string not found, skipping Azure verification", "WARNING")
+                    verification_results["cleaned_files"] = []
+                    
+            except Exception as e:
+                log("ORCHESTRATOR", f"Error checking Azure for cleaned files: {str(e)}", "WARNING")
+                verification_results["cleaned_files"] = []
             
-            verification_results["cleaned_files"] = cleaned_files
-            verification_results["total_files"] = len(raw_files) + len(cleaned_files)
+            verification_results["total_files"] = len(raw_files) + len(verification_results["cleaned_files"])
         
         return verification_results
     
     def run_pipeline(self) -> dict:
-        """Run the data query, CSV cleaning, and schema sync pipeline."""
-        log("ORCHESTRATOR", "Starting LWS CloudPipe v2 - Data Query, CSV Cleaning & Schema Sync", "INFO")
+        """Run the data query, CSV cleaning, schema sync, and data load pipeline."""
+        log("ORCHESTRATOR", "Starting LWS CloudPipe v2 - Data Query, CSV Cleaning, Schema Sync & Data Load", "INFO")
         log("ORCHESTRATOR", "=" * 60, "INFO")
-        
-        # Update total stages count
-        self.results["total_stages"] = 3  # Data query, CSV cleaner, and schema sync
-        
-        # Stage 1: Data Query
+        self.results["total_stages"] = 4
         stage1_success = self.run_data_query()
         if stage1_success:
             self.results["successful_stages"] += 1
         else:
             self.results["failed_stages"] += 1
-        
-        # Brief pause between stages
         time.sleep(2)
-        
-        # Stage 2: CSV Cleaning
         stage2_success = self.run_csv_cleaner()
         if stage2_success:
             self.results["successful_stages"] += 1
         else:
             self.results["failed_stages"] += 1
-        
-        # Brief pause between stages
         time.sleep(2)
-        
-        # Stage 3: Schema Sync
         stage3_success = self.run_schema_sync()
         if stage3_success:
             self.results["successful_stages"] += 1
         else:
             self.results["failed_stages"] += 1
-        
-        # Verify output files (both raw and cleaned files)
+        time.sleep(2)
+        stage4_success = self.run_load_from_azure()
+        if stage4_success:
+            self.results["successful_stages"] += 1
+        else:
+            self.results["failed_stages"] += 1
         verification_results = self.verify_output_files()
         self.results["verification"] = verification_results
-        
-        # Finalize results
         self.results["orchestration_end"] = datetime.now().isoformat()
         self.results["duration_seconds"] = (datetime.now() - self.start_time).total_seconds()
-        self.results["overall_success"] = self.results["successful_stages"] == 3  # All three stages must succeed
-        
-        # Log final results
+        self.results["overall_success"] = self.results["successful_stages"] == 4
         self.log_final_results()
-        
         return self.results
     
     def log_final_results(self):
