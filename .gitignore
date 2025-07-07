@@ -73,6 +73,7 @@ config_files/
 !jest.config.js
 !eslint.config.js
 !prettier.config.js
+settings.json
 
 # Docker
 .dockerignore
