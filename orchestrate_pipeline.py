@@ -33,7 +33,7 @@ class PipelineOrchestrator:
             "orchestration_start": self.start_time.isoformat(),
             "stages": {},
             "overall_success": False,
-            "total_stages": 2,  # Run data query and CSV cleaner
+            "total_stages": 3,  # Run data query, CSV cleaner, and schema sync
             "successful_stages": 0,
             "failed_stages": 0
         }
@@ -305,9 +305,12 @@ class PipelineOrchestrator:
         return verification_results
     
     def run_pipeline(self) -> dict:
-        """Run the data query and CSV cleaning pipeline."""
-        log("ORCHESTRATOR", "Starting LWS CloudPipe v2 - Data Query & CSV Cleaning", "INFO")
+        """Run the data query, CSV cleaning, and schema sync pipeline."""
+        log("ORCHESTRATOR", "Starting LWS CloudPipe v2 - Data Query, CSV Cleaning & Schema Sync", "INFO")
         log("ORCHESTRATOR", "=" * 60, "INFO")
+        
+        # Update total stages count
+        self.results["total_stages"] = 3  # Data query, CSV cleaner, and schema sync
         
         # Stage 1: Data Query
         stage1_success = self.run_data_query()
@@ -326,6 +329,16 @@ class PipelineOrchestrator:
         else:
             self.results["failed_stages"] += 1
         
+        # Brief pause between stages
+        time.sleep(2)
+        
+        # Stage 3: Schema Sync
+        stage3_success = self.run_schema_sync()
+        if stage3_success:
+            self.results["successful_stages"] += 1
+        else:
+            self.results["failed_stages"] += 1
+        
         # Verify output files (both raw and cleaned files)
         verification_results = self.verify_output_files()
         self.results["verification"] = verification_results
@@ -333,7 +346,7 @@ class PipelineOrchestrator:
         # Finalize results
         self.results["orchestration_end"] = datetime.now().isoformat()
         self.results["duration_seconds"] = (datetime.now() - self.start_time).total_seconds()
-        self.results["overall_success"] = self.results["successful_stages"] == 2  # Both stages must succeed
+        self.results["overall_success"] = self.results["successful_stages"] == 3  # All three stages must succeed
         
         # Log final results
         self.log_final_results()
@@ -363,7 +376,7 @@ class PipelineOrchestrator:
             status_symbol = "SUCCESS" if stage_result["status"] == "success" else "FAILED"
             log("ORCHESTRATOR", f"{stage_name}: {stage_result['status']} ({status_symbol})", "INFO")
         
-        log("ORCHESTRATOR", "NOTE: Data query and CSV cleaning stages were executed", "INFO")
+        log("ORCHESTRATOR", "NOTE: Data query, CSV cleaning, and schema sync stages were executed", "INFO")
         
         log("ORCHESTRATOR", "=" * 60, "INFO")
 
@@ -375,7 +388,7 @@ def main():
         
         # Print summary to console
         print("\n" + "="*60)
-        print("LWS CLOUDPIPE v2 - DATA QUERY & CSV CLEANING SUMMARY")
+        print("LWS CLOUDPIPE v2 - DATA QUERY, CSV CLEANING & SCHEMA SYNC SUMMARY")
         print("="*60)
         print(f"Start Time: {results['orchestration_start']}")
         print(f"End Time: {results['orchestration_end']}")
@@ -413,23 +426,6 @@ def main():
         log("ORCHESTRATOR", f"Critical orchestration error: {str(e)}", "CRITICAL")
         print(f"\n❌ Critical error: {str(e)}")
         return 1
-
-# Comment out or remove all pipeline steps except data_query
-# For example, if the main function looks like this:
-# def main():
-#     run_data_query()
-#     run_csv_cleaner()
-#     run_schema_sync_pipeline()
-#
-# Change to:
-# def main():
-#     run_data_query()
-
-# Find the main orchestration logic:
-if __name__ == "__main__":
-    # Only run data_query
-    from pipeline_scripts import data_query
-    data_query.main()
 
 if __name__ == "__main__":
     sys.exit(main()) 

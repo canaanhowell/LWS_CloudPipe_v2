@@ -327,6 +327,18 @@ def main():
     # Generate and save report
     report = generate_schema_report(analysis_results)
     
+    # Print summary of column mismatches directly to console
+    print("\nSCHEMA SYNC SUMMARY: COLUMN MISMATCHES")
+    for result in analysis_results:
+        print(f"Table: {result['table_name']}")
+        if result['missing_in_snowflake']:
+            print(f"  Missing in Snowflake: {result['missing_in_snowflake']}")
+        if result['extra_in_snowflake']:
+            print(f"  Extra in Snowflake: {result['extra_in_snowflake']}")
+        if not result['missing_in_snowflake'] and not result['extra_in_snowflake']:
+            print("  [OK] No mismatches.")
+        print()
+    
     # Save report to file
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     report_filename = f"schema_variance_report_{timestamp}.txt"

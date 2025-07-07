@@ -10,28 +10,22 @@ import json
 import snowflake.connector
 import base64
 from datetime import datetime
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.backends import default_backend
 
 # Add helper_scripts/Utils to path for logger import
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'Utils'))
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'helper_scripts', 'Utils'))
 from logger import pipeline_logger
 
 def get_snowflake_connection(settings):
     """Create and return a Snowflake connection"""
-    # Load private key for Snowflake (PEM format)
-    private_key_path = settings['SNOWFLAKE_PRIVATE_KEY_PATH']
-    with open(private_key_path, 'r') as f:
-        p_key = serialization.load_pem_private_key(
-            f.read().encode('utf-8'),
-            password=None,
-            backend=default_backend()
-        )
-    pkb = p_key.private_bytes(
-        encoding=serialization.Encoding.DER,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption()
-    )
+    # Load private key for Snowflake
+    private_key_path = os.path.join(os.path.dirname(__file__), '..', settings['SNOWFLAKE_PRIVATE_KEY_PATH'])
+    
+    # Load private key (base64 DER format)
+    with open(private_key_path, "r") as key_file:
+        key_content = key_file.read().strip()
+    
+    # Decode base64 to get DER bytes
+    pkb = base64.b64decode(key_content)
     
     snowflake_config = {
         'user': settings['SNOWFLAKE_USER'],
@@ -50,14 +44,14 @@ def truncate_all_tables():
     pipeline_logger.log("TRUNCATE_TABLES", "🗑️ Starting table truncation process", "INFO")
     
     try:
-        # Load settings from config file
-        settings_path = os.path.join('config_files', 'settings.json')
-        with open(settings_path, 'r') as f:
+        # Load settings
+        pipeline_logger.log("TRUNCATE_TABLES", "🔑 Loading Snowflake credentials", "INFO")
+        with open('../config_files/settings.json', 'r') as f:
             settings = json.load(f)
         
-        # Load table mapping configuration
-        mapping_path = os.path.join('config_files', 'table_mapping.json')
-        with open(mapping_path, 'r') as f:
+        # Load table mapping
+        pipeline_logger.log("TRUNCATE_TABLES", "📋 Loading table mapping configuration", "INFO")
+        with open('../config_files/table_mapping.json', 'r') as f:
             table_mapping = json.load(f)
         
         # Connect to Snowflake

@@ -17,7 +17,7 @@ from azure.storage.blob import BlobServiceClient
 import numpy as np
 
 # Add helper_scripts/Utils to path for logger import
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'Utils'))
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'helper_scripts', 'Utils'))
 from logger import pipeline_logger
 
 def clean_column_name(column_name):

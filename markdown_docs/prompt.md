@@ -1,9 +1,9 @@
 
 
 ## MISSION PARAMETERS
-**OBJECTIVE:** test the full pipeline
+**OBJECTIVE:** azure container instance to run the orchestrate_pipeline script in the azure cloud. use azure cli to create. make sure we have a way to log dillegently and debug when running in the cloud
 
-**SUCCESS CRITERIA:** each snowflake table matches its corresponding azure storage csv identically
+**SUCCESS CRITERIA:** all cleaned csv's succesfully uploaded to azure blob storage
 
 **AUTHORITY LEVEL:** Full autonomy - proceed to troubleshooting/debugging using this document as a guide without asking user for directions
 
