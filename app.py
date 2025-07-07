@@ -31,15 +31,42 @@ def pipeline_status():
 @app.route('/api/pipeline/run', methods=['POST'])
 def run_pipeline():
     """Pipeline run endpoint."""
-    data = request.get_json() or {}
-    pipeline = data.get('pipeline', 'default')
-    
-    return jsonify({
-        "status": "started",
-        "pipeline": pipeline,
-        "job_id": "test_job_123",
-        "timestamp": datetime.utcnow().isoformat()
-    })
+    import subprocess
+    import sys
+    from pathlib import Path
+    from datetime import datetime
+
+    try:
+        # Path to orchestrate_pipeline.py
+        script_path = Path(__file__).parent / 'orchestrate_pipeline.py'
+        if not script_path.exists():
+            return jsonify({
+                "status": "error",
+                "error": f"Script not found: {script_path}",
+                "timestamp": datetime.utcnow().isoformat()
+            }), 500
+
+        # Run the orchestrator as a subprocess
+        result = subprocess.run(
+            [sys.executable, str(script_path)],
+            capture_output=True,
+            text=True,
+            cwd=Path(__file__).parent
+        )
+
+        return jsonify({
+            "status": "completed" if result.returncode == 0 else "failed",
+            "return_code": result.returncode,
+            "stdout": result.stdout[-1000:],  # Return last 1000 chars for brevity
+            "stderr": result.stderr[-1000:],
+            "timestamp": datetime.utcnow().isoformat()
+        })
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "error": str(e),
+            "timestamp": datetime.utcnow().isoformat()
+        }), 500
 
 @app.route('/api/upload/csv', methods=['POST'])
 def upload_csv():

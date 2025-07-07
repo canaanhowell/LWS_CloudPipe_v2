@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
-LWS CloudPipe v2 - Main Orchestration Script
+LWS CloudPipe v2 - Data Query & CSV Cleaning Orchestration Script
 
-This script orchestrates the complete data pipeline:
+This script orchestrates the data query and CSV cleaning modules of the data pipeline:
 1. Runs data_query.py to extract data from all endpoints
 2. Runs csv_cleaner.py to clean and merge the extracted data
 3. Provides comprehensive logging and error handling
+
+Modified to run data query and CSV cleaning stages for local testing.
 """
 
 import os
@@ -31,7 +33,7 @@ class PipelineOrchestrator:
             "orchestration_start": self.start_time.isoformat(),
             "stages": {},
             "overall_success": False,
-            "total_stages": 5,  # Updated to include external storage stages
+            "total_stages": 2,  # Run data query and CSV cleaner
             "successful_stages": 0,
             "failed_stages": 0
         }
@@ -303,8 +305,8 @@ class PipelineOrchestrator:
         return verification_results
     
     def run_pipeline(self) -> dict:
-        """Run the complete orchestrated pipeline."""
-        log("ORCHESTRATOR", "Starting LWS CloudPipe v2 Pipeline Orchestration", "INFO")
+        """Run the data query and CSV cleaning pipeline."""
+        log("ORCHESTRATOR", "Starting LWS CloudPipe v2 - Data Query & CSV Cleaning", "INFO")
         log("ORCHESTRATOR", "=" * 60, "INFO")
         
         # Stage 1: Data Query
@@ -324,34 +326,14 @@ class PipelineOrchestrator:
         else:
             self.results["failed_stages"] += 1
         
-        # Brief pause between stages
-        time.sleep(2)
-        
-        # Stage 3: Schema Synchronization
-        stage3_success = self.run_schema_sync()
-        if stage3_success:
-            self.results["successful_stages"] += 1
-        else:
-            self.results["failed_stages"] += 1
-        
-        # Brief pause between stages
-        time.sleep(2)
-        
-        # Stage 5: External Storage Integration Verification
-        stage5_success = self.run_external_storage_verification()
-        if stage5_success:
-            self.results["successful_stages"] += 1
-        else:
-            self.results["failed_stages"] += 1
-        
-        # Verify output files
+        # Verify output files (both raw and cleaned files)
         verification_results = self.verify_output_files()
         self.results["verification"] = verification_results
         
         # Finalize results
         self.results["orchestration_end"] = datetime.now().isoformat()
         self.results["duration_seconds"] = (datetime.now() - self.start_time).total_seconds()
-        self.results["overall_success"] = self.results["successful_stages"] == self.results["total_stages"]
+        self.results["overall_success"] = self.results["successful_stages"] == 2  # Both stages must succeed
         
         # Log final results
         self.log_final_results()
@@ -381,6 +363,8 @@ class PipelineOrchestrator:
             status_symbol = "SUCCESS" if stage_result["status"] == "success" else "FAILED"
             log("ORCHESTRATOR", f"{stage_name}: {stage_result['status']} ({status_symbol})", "INFO")
         
+        log("ORCHESTRATOR", "NOTE: Data query and CSV cleaning stages were executed", "INFO")
+        
         log("ORCHESTRATOR", "=" * 60, "INFO")
 
 def main():
@@ -391,7 +375,7 @@ def main():
         
         # Print summary to console
         print("\n" + "="*60)
-        print("LWS CLOUDPIPE v2 - PIPELINE ORCHESTRATION SUMMARY")
+        print("LWS CLOUDPIPE v2 - DATA QUERY & CSV CLEANING SUMMARY")
         print("="*60)
         print(f"Start Time: {results['orchestration_start']}")
         print(f"End Time: {results['orchestration_end']}")
@@ -410,6 +394,11 @@ def main():
         print(f"  Cleaned files: {len(verification.get('cleaned_files', []))}")
         print(f"  Total files: {verification.get('total_files', 0)}")
         
+        if verification.get("raw_files"):
+            print("\n  Raw files created:")
+            for file in verification["raw_files"]:
+                print(f"    {file}")
+        
         if verification.get("cleaned_files"):
             print("\n  Cleaned files created:")
             for file in verification["cleaned_files"]:
@@ -424,6 +413,23 @@ def main():
         log("ORCHESTRATOR", f"Critical orchestration error: {str(e)}", "CRITICAL")
         print(f"\n❌ Critical error: {str(e)}")
         return 1
+
+# Comment out or remove all pipeline steps except data_query
+# For example, if the main function looks like this:
+# def main():
+#     run_data_query()
+#     run_csv_cleaner()
+#     run_schema_sync_pipeline()
+#
+# Change to:
+# def main():
+#     run_data_query()
+
+# Find the main orchestration logic:
+if __name__ == "__main__":
+    # Only run data_query
+    from pipeline_scripts import data_query
+    data_query.main()
 
 if __name__ == "__main__":
     sys.exit(main()) 

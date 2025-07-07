@@ -85,10 +85,25 @@ class DataPipeline:
     
     def upload_df_to_azure(self, df: pd.DataFrame, blob_name: str) -> bool:
         """Upload a DataFrame as CSV to Azure Blob Storage."""
+        # Debug: Print working directory, file list, config, and env vars
+        try:
+            import os
+            log("DEBUG", f"Working directory: {os.getcwd()}", "INFO")
+            log("DEBUG", f"CSV dir: {self.csv_dir}", "INFO")
+            files = list(self.csv_dir.glob("*.csv"))
+            log("DEBUG", f"Files in CSV dir: {[f.name for f in files]}", "INFO")
+            log("DEBUG", f"Azure container: {self.azure_container_name}", "INFO")
+            log("DEBUG", f"Azure connection string present: {'AZURE_STORAGE_CONNECTION_STRING' in self.credentials}", "INFO")
+            log("DEBUG", f"Env AZURE_STORAGE_CONNECTION_STRING: {os.environ.get('AZURE_STORAGE_CONNECTION_STRING', 'NOT SET')}", "INFO")
+            log("DEBUG", f"Env BLOB_CONTAINER: {os.environ.get('BLOB_CONTAINER', 'NOT SET')}", "INFO")
+        except Exception as e:
+            log("DEBUG", f"Error during debug logging: {e}", "ERROR")
+
         if not self.azure_container_client:
             log("AZURE_BLOB", "Azure container client not initialized", "ERROR")
             return False
         try:
+            import io
             csv_buffer = io.StringIO()
             df.to_csv(csv_buffer, index=False)
             csv_bytes = csv_buffer.getvalue().encode("utf-8")
@@ -475,7 +490,6 @@ def main():
     try:
         pipeline = DataPipeline()
         results = pipeline.run_pipeline()
-        
         # Print summary
         print("\n" + "="*50)
         print("DATA PIPELINE EXECUTION SUMMARY")
@@ -485,21 +499,47 @@ def main():
         print(f"Successful Endpoints: {results['success_count']}/{results['total_endpoints']}")
         print(f"Completion: {results['completion_percentage']:.1f}%")
         print("\nEndpoint Results:")
-        
         for endpoint, details in results['endpoints'].items():
             status_symbol = "SUCCESS" if details['status'] == 'success' else "FAILED"
             print(f"  {endpoint}: {details['status']} ({status_symbol})")
-        
         print("="*50)
-        
         # Check if CSV files were created
         csv_files = list(pipeline.csv_dir.glob("*.csv"))
         print(f"\nCSV Files Created: {len(csv_files)}")
         for csv_file in csv_files:
             print(f"  {csv_file.name}")
-        
+        # Print log file contents to stdout
+        import time
+        import os
+        log_dir = pipeline.base_dir / "logs"
+        log_file = log_dir / "pipeline.log"
+        if log_file.exists():
+            print("\n=== PIPELINE LOG FILE ===")
+            with open(log_file, "r") as f:
+                print(f.read())
+        else:
+            print("\n(No pipeline.log file found in logs directory)")
+        # Upload log file to Azure Blob Storage
+        try:
+            from azure.storage.blob import BlobServiceClient
+            log_path = log_file
+            blob_name = "pipeline_debug_log.txt"
+            connection_string = pipeline.credentials.get("AZURE_STORAGE_CONNECTION_STRING")
+            container_name = pipeline.credentials.get("BLOB_CONTAINER", "pbi25")
+            if log_path.exists() and connection_string and container_name:
+                blob_service_client = BlobServiceClient.from_connection_string(connection_string)
+                container_client = blob_service_client.get_container_client(container_name)
+                with open(log_path, "rb") as data:
+                    container_client.upload_blob(name=blob_name, data=data, overwrite=True)
+                print(f"Uploaded log file to Azure Blob Storage as {blob_name}")
+            else:
+                print("Log file, connection string, or container name missing. Skipping log upload.")
+        except Exception as e:
+            print(f"Failed to upload log file to Azure Blob Storage: {e}")
+        # Sleep to keep container alive for log inspection
+        print("\nSleeping for 60 seconds to allow log inspection...")
+        time.sleep(60)
         return 0 if results['success_count'] > 0 else 1
-        
     except Exception as e:
         log("PIPELINE", f"Critical pipeline error: {str(e)}", "CRITICAL")
         return 1

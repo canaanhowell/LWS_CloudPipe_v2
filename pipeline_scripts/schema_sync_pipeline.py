@@ -253,7 +253,7 @@ def generate_schema_report(analysis_results: List[Dict]) -> str:
             report.append("")
         
         if not result['missing_in_snowflake'] and not result['extra_in_snowflake']:
-            report.append("✅ PERFECT MATCH - No schema variances detected")
+            report.append("[SUCCESS] PERFECT MATCH - No schema variances detected")
             report.append("")
         
         report.append(f"Matching Columns: {result['matching_columns']}")
@@ -316,9 +316,9 @@ def main():
             missing_count = len(analysis['missing_in_snowflake'])
             extra_count = len(analysis['extra_in_snowflake'])
             if missing_count == 0 and extra_count == 0:
-                log("SCHEMA_SYNC", f"✅ Perfect schema match for {database}.{schema}.{table_name}", "INFO")
+                log("SCHEMA_SYNC", f"[SUCCESS] Perfect schema match for {database}.{schema}.{table_name}", "INFO")
             else:
-                log("SCHEMA_SYNC", f"⚠️  Schema variances found for {database}.{schema}.{table_name}: {missing_count} missing, {extra_count} extra", "WARNING")
+                log("SCHEMA_SYNC", f"[WARNING] Schema variances found for {database}.{schema}.{table_name}: {missing_count} missing, {extra_count} extra", "WARNING")
             successful_tables += 1
         except Exception as e:
             log("SCHEMA_SYNC", f"Error analyzing {database}.{schema}.{table_name}: {str(e)}", "ERROR")
